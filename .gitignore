@@ -1,3 +1,5 @@
+nuScenes
+checkpoints/
 *output*
 **/__pycache__
 **/.DS_Store

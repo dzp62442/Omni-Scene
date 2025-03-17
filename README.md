@@ -49,6 +49,7 @@ conda activate omniscene
 
 # install dependencies
 pip install --upgrade pip setuptools
+pip install numpy==1.26.4
 
 ## install pytorch (CUDA 11.8)
 pip install "torch==2.1.0+cu118" "torchvision==0.16.0+cu118" torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
@@ -56,8 +57,9 @@ pip install "torch==2.1.0+cu118" "torchvision==0.16.0+cu118" torchaudio==2.1.0 -
 pip install "torch==2.1.0+cu121" "torchvision==0.16.0+cu121" torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
 
 ## install 3DGS rasterizer (w/ depth)
-git clone --recursive https://github.com/ashawkey/diff-gaussian-rasterization
-pip install diff-gaussian-rasterization
+cd $PROJECT_ROOT
+git clone --recursive git@github.com:ashawkey/diff-gaussian-rasterization.git  # https://github.com/ashawkey/diff-gaussian-rasterization
+pip install ./diff-gaussian-rasterization
 
 ## common dependencies
 pip install -r requirements.txt
@@ -66,10 +68,13 @@ pip install -r requirements.txt
 pip install -U openmim
 pip install mmengine
 pip install ninja psutil
-git clone https://github.com/open-mmlab/mmcv.git
+git clone git@github.com:open-mmlab/mmcv.git  # https://github.com/open-mmlab/mmcv.git
+cd mmcv
 git checkout v2.1.0
-MAX_JOBS=16 MMCV_WITH_OPS=1 FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST="8.9+PTX" pip install -e . -v
-mim install 'mmdet>=3.0.0'
+export CUDA_HOME=/usr/local/cuda-11.8  # 要与CUDA版本匹配
+MAX_JOBS=8 MMCV_WITH_OPS=1 FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST="8.6+PTX" pip install -e . -v  # 要与显卡算力架构匹配
+cd ..
+mim install 'mmdet==3.2.0'
 mim install 'mmdet3d==1.4.0'
 ```
 You can refer to [MMLab documents](https://mmdetection3d.readthedocs.io/en/latest/get_started.html) for details about mmcv and mmdet3d installation.
@@ -102,10 +107,10 @@ Put the extracted files under {ROOT}/data, and the data should be structured lik
 The training script is as follows. We have released our pre-trained weights [here](https://drive.google.com/drive/folders/1vgc8VjXhuo35KwFqbJiqdu5FEDg6AMRy?usp=sharing).
 
 ```bash
-accelerate launch --config-file accelerate_config.yaml train.py \
-    --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
-    --work-dir workdirs/omni_gs_nusc_novelview_r50_224x400 \
-    --resume-from path/to/checkpoints
+CUDA_VISIBLE_DEVICES=2,3 accelerate launch --config-file accelerate_config.yaml train.py \
+    --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_112x200.py \
+    --work-dir workdirs/omni_gs_nusc_novelview_r50_112x200 \
+    # --resume-from workdirs/omni_gs_nusc_novelview_r50_112x200/latest/  # 自动从latest中恢复训练，暂时无用
 ```
 where
 - `--config-file accelerate_config.yaml` is the relative path of accelrate configuration file;
@@ -122,7 +127,7 @@ where
 The evaluation script is as follows.
 
 ```bash
-accelerate launch --config-file accelerate_config.yaml evaluate.py \
+CUDA_VISIBLE_DEVICES=3 accelerate launch --config-file accelerate_config.yaml evaluate.py \
     --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
     --output-dir outputs/omni_gs_nusc_novelview_r50_224x400 \
     --load-from checkpoints/checkpoint-100000
@@ -141,7 +146,7 @@ where
 This command will generate and save 360 degree exploring videos for the reconstructed 3D scenes:
 
 ```bash
-accelerate launch --config-file accelerate_config.yaml demo.py \
+CUDA_VISIBLE_DEVICES=1 accelerate launch --config-file accelerate_config.yaml demo.py \
     --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
     --output-dir outputs/omni_gs_nusc_novelview_r50_224x400_vis \
     --load-from checkpoints/checkpoint-100000

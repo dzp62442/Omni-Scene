@@ -1,3 +1,4 @@
+numpy==1.26.4
 tyro
 einops
 accelerate
@@ -33,3 +34,5 @@ transformers==4.28.1
 typeguard==2.13.3
 taming-transformers
 timm==0.4.12
+diffusers
+setproctitle

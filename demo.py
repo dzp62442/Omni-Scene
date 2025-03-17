@@ -13,6 +13,7 @@ import imageio
 from mmengine import MMLogger
 from mmengine.config import Config
 import logging
+import setproctitle
 
 import moviepy.editor as mpy
 import wandb
@@ -141,7 +142,7 @@ def main(args):
             if torch.cuda.device_count() > 1:
                 preds, bin_tokens = my_model.module.forward_demo(batch)
             else:
-                preds, bin_tokens = my_model.forward_demo(batch)
+                preds, bin_tokens = my_model.module.forward_demo(batch)  # 显卡数量为 1 但仍用 accelerate 启动多卡推理
             bs = preds["img"].shape[0]
             pred_imgs = preds["img"]
             pred_depths = preds["depth"]
@@ -180,6 +181,7 @@ def main(args):
 
 
 if __name__ == '__main__':
+    setproctitle.setproctitle('dzp_vis')
     # Training settings
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--py-config')

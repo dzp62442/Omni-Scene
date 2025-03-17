@@ -13,6 +13,7 @@ import mmengine
 from mmengine import MMLogger
 from mmengine.config import Config
 import logging
+import setproctitle
 
 from datetime import timedelta
 from accelerate import Accelerator
@@ -249,6 +250,7 @@ def main(args):
 
 
 if __name__ == '__main__':
+    setproctitle.setproctitle('dzp_train')
     # Training settings
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--py-config')

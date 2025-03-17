@@ -13,6 +13,7 @@ import imageio
 from mmengine import MMLogger
 from mmengine.config import Config
 import logging
+import setproctitle
 
 from accelerate import Accelerator
 from accelerate.utils import set_seed, convert_outputs_to_fp32, DistributedType, ProjectConfiguration
@@ -296,6 +297,7 @@ def save_ply(gaussians, path, crop_range=[-50.0, -50.0, -3.0, 50.0, 50.0, 12.0],
     PlyData([el]).write(path)
 
 if __name__ == '__main__':
+    setproctitle.setproctitle('dzp_test')
     # Training settings
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--py-config')
