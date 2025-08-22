@@ -141,7 +141,7 @@ def main(args):
             if torch.cuda.device_count() > 1:
                 preds, bin_tokens = my_model.module.forward_demo(batch)
             else:
-                preds, bin_tokens = my_model.forward_demo(batch)
+                preds, bin_tokens = my_model.module.forward_demo(batch)
             bs = preds["img"].shape[0]
             pred_imgs = preds["img"]
             pred_depths = preds["depth"]

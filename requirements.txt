@@ -1,7 +1,7 @@
 numpy==1.26.4
 tyro
 einops
-accelerate
+accelerate==1.7.0
 gradio
 imageio
 imageio-ffmpeg

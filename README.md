@@ -112,7 +112,7 @@ Put the extracted files under {ROOT}/data, and the data should be structured lik
 This command will generate and save 360 degree exploring videos for the reconstructed 3D scenes:
 
 ```bash
-accelerate launch --config-file accelerate_config.yaml demo.py \
+CUDA_VISIBLE_DEVICES=7 accelerate launch --config-file accelerate_config.yaml demo.py \
     --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
     --output-dir outputs/omni_gs_nusc_novelview_r50_224x400_vis \
     --load-from checkpoints/checkpoint-100000
@@ -133,10 +133,10 @@ where
 The training script is as follows. We have released our pre-trained weights [here](https://drive.google.com/drive/folders/1vgc8VjXhuo35KwFqbJiqdu5FEDg6AMRy?usp=sharing).
 
 ```bash
-accelerate launch --config-file accelerate_config.yaml train.py \
+CUDA_VISIBLE_DEVICES=7 accelerate launch --config-file accelerate_config.yaml train.py \
     --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
     --work-dir workdirs/omni_gs_nusc_novelview_r50_224x400 \
-    --resume-from path/to/checkpoints
+    # --resume-from path/to/checkpoints
 ```
 where
 - `--config-file accelerate_config.yaml` is the relative path of accelrate configuration file;
@@ -152,7 +152,7 @@ where
 The evaluation script is as follows.
 
 ```bash
-accelerate launch --config-file accelerate_config.yaml evaluate.py \
+CUDA_VISIBLE_DEVICES=7 accelerate launch --config-file accelerate_config.yaml evaluate.py \
     --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
     --output-dir outputs/omni_gs_nusc_novelview_r50_224x400 \
     --load-from checkpoints/checkpoint-100000
