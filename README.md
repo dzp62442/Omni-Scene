@@ -43,6 +43,8 @@ https://github.com/user-attachments/assets/dba0bb77-31ae-47df-a1f5-4abe5b96c87d
 
 ### 1. Installation
 
+显卡算力架构查询 https://developer.nvidia.com/cuda-gpus
+
 ```bash
 # (Optional) create a fresh conda env
 conda create --name omniscene -y "python==3.10"
@@ -50,6 +52,7 @@ conda activate omniscene
 
 # install dependencies
 pip install --upgrade pip setuptools
+pip install numpy==1.26.4
 
 ## install pytorch (CUDA 11.8)
 pip install "torch==2.1.0+cu118" "torchvision==0.16.0+cu118" torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
@@ -57,8 +60,9 @@ pip install "torch==2.1.0+cu118" "torchvision==0.16.0+cu118" torchaudio==2.1.0 -
 pip install "torch==2.1.0+cu121" "torchvision==0.16.0+cu121" torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
 
 ## install 3DGS rasterizer (w/ depth)
+cd $PROJECT_ROOT
 git clone --recursive https://github.com/ashawkey/diff-gaussian-rasterization
-pip install diff-gaussian-rasterization
+TORCH_CUDA_ARCH_LIST="8.6+PTX" pip install ./diff-gaussian-rasterization  # 要与显卡算力架构匹配
 
 ## common dependencies
 pip install -r requirements.txt
@@ -68,9 +72,11 @@ pip install -U openmim
 pip install mmengine
 pip install ninja psutil
 git clone https://github.com/open-mmlab/mmcv.git
+cd mmcv
 git checkout v2.1.0
-MAX_JOBS=16 MMCV_WITH_OPS=1 FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST="8.9+PTX" pip install -e . -v
-mim install 'mmdet>=3.0.0'
+export CUDA_HOME=/usr/local/cuda-11.8  # 要与CUDA版本匹配
+MAX_JOBS=8 MMCV_WITH_OPS=1 FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST="8.6+PTX" pip install -e . -v  # 要与显卡算力架构匹配
+mim install 'mmdet==3.2.0'
 mim install 'mmdet3d==1.4.0'
 ```
 You can refer to [MMLab documents](https://mmdetection3d.readthedocs.io/en/latest/get_started.html) for details about mmcv and mmdet3d installation.

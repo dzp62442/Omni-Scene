@@ -1,0 +1,14 @@
+{
+    "search.exclude": {
+      "**/diff-gaussian-rasterization": true,
+      "**/mmcv": true,
+    },
+    "files.watcherExclude": {
+        "**/.git": true,
+        "**/data/nuScenes": true,
+    },
+    "cursorpyright.analysis.exclude": [
+        "**/.git",
+        "**/data/nuScenes",
+    ]
+  }
