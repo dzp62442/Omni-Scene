@@ -99,10 +99,16 @@ def main(args):
 
     # generate datasets
     dataset = getattr(datasets, dataset_config.dataset_name)
-    val_dataset = dataset(dataset_config.resolution, split="test",
-                          use_center=dataset_config.use_center,
-                          use_first=dataset_config.use_first,
-                          use_last=dataset_config.use_last)
+    if args.mini:
+        val_dataset = dataset(dataset_config.resolution, split="mini-test",
+                        use_center=dataset_config.use_center,
+                        use_first=dataset_config.use_first,
+                        use_last=dataset_config.use_last)
+    else:
+        val_dataset = dataset(dataset_config.resolution, split="test",
+                            use_center=dataset_config.use_center,
+                            use_first=dataset_config.use_first,
+                            use_last=dataset_config.use_last)
     val_dataloader = DataLoader(
         val_dataset, dataset_config.batch_size_test, shuffle=False,
         num_workers=dataset_config.num_workers_test
@@ -175,8 +181,8 @@ def main(args):
             )
             bv_pcc_mean = bv_pcc.mean()
             total_pcc += bv_pcc_mean
-            logger.info('[Eval] Batch %d-%d: psnr: %.3f, ssim: %.4f, lpips: %.4f, pcc: %.4f'%(
-                    i_iter, bv_psnr_mean.device.index, bv_psnr_mean, bv_ssim_mean, bv_lpips_mean, bv_pcc_mean))
+            logger.info('[Eval] Batch %d/%d-%d: psnr: %.3f, ssim: %.4f, lpips: %.4f, pcc: %.4f'%(
+                    i_iter, len(val_dataloader), bv_psnr_mean.device.index, bv_psnr_mean, bv_ssim_mean, bv_lpips_mean, bv_pcc_mean))
             if cfg.eval_args.save_ply:
                 for b in range(bs):
                     bin_token = bin_tokens[b]
@@ -301,6 +307,7 @@ if __name__ == '__main__':
     parser.add_argument('--py-config')
     parser.add_argument('--output-dir', type=str, default=None)
     parser.add_argument('--load-from', type=str, default=None)
+    parser.add_argument('--mini', action='store_true')
 
     args = parser.parse_args()
     

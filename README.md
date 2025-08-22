@@ -155,7 +155,7 @@ The evaluation script is as follows.
 CUDA_VISIBLE_DEVICES=7 accelerate launch --config-file accelerate_config.yaml evaluate.py \
     --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
     --output-dir outputs/omni_gs_nusc_novelview_r50_224x400 \
-    --load-from checkpoints/checkpoint-100000
+    --load-from checkpoints/checkpoint-100000 --mini
 ```
 where
 - `--config-file accelerate_config.yaml` is the relative path of accelrate configuration file;
