@@ -212,7 +212,7 @@ def main(args):
                     my_model.eval()
                     if accelerator.is_main_process:
                         for i_iter_val, batch_val in enumerate(val_dataloader):
-                            val_batch_save_dir = osp.join(cfg.output_dir, cfg.exp_name, "validation",
+                            val_batch_save_dir = osp.join(args.work_dir, "validation",
                                                 "step-{}/batch-{}".format(global_iter, i_iter_val))
                             log_val = my_model.module.validation_step(batch_val, val_batch_save_dir)
                             log.update(log_val)
@@ -227,8 +227,8 @@ def main(args):
                 for loss_k, loss_v in log.items():
                     losses_str += ("%s: %.3f, " % (loss_k, loss_v))
                 if logger is not None:
-                    logger.info('[TRAIN] Epoch %d Iter %5d/%d: Loss: %.3f, %s grad_norm: %.1f, lr: %.7f, time: %.3f (%.3f)'%(
-                        epoch, i_iter, len(train_dataloader), 
+                    logger.info('[TRAIN] Global-iter %d Epoch %d Iter %5d/%d: Loss: %.3f, %s grad_norm: %.1f, lr: %.7f, time: %.3f (%.3f)'%(
+                        global_iter, epoch, i_iter, len(train_dataloader), 
                         loss.item(), losses_str, grad_norm, lr,
                         time_e - time_s, data_time_e - data_time_s
                     ))
