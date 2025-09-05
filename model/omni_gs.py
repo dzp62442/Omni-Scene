@@ -349,17 +349,18 @@ class OmniGaussian(BaseModule):
                     data_dict["rays_o"], data_dict["rays_d"], status="test")
 
         # volume-gs prediction
-        pc_range = self.dataset_params.pc_range
-        x_start, y_start, z_start, x_end, y_end, z_end = pc_range
-        gaussians_pixel_mask, gaussians_feat_mask = [], []
-        for b in range(bs):
-            mask_pixel_i = (gaussians_pixel[b, :, 0] >= x_start) & (gaussians_pixel[b, :, 0] <= x_end) & \
-                        (gaussians_pixel[b, :, 1] >= y_start) & (gaussians_pixel[b, :, 1] <= y_end) & \
-                        (gaussians_pixel[b, :, 2] >= z_start) & (gaussians_pixel[b, :, 2] <= z_end)
-            gaussians_pixel_mask_i = gaussians_pixel[b][mask_pixel_i]
-            gaussians_feat_mask_i = gaussians_feat[b][mask_pixel_i]
-            gaussians_pixel_mask.append(gaussians_pixel_mask_i)
-            gaussians_feat_mask.append(gaussians_feat_mask_i)
+        with self.benchmarker.time("mask_pixel"):
+            pc_range = self.dataset_params.pc_range
+            x_start, y_start, z_start, x_end, y_end, z_end = pc_range
+            gaussians_pixel_mask, gaussians_feat_mask = [], []
+            for b in range(bs):
+                mask_pixel_i = (gaussians_pixel[b, :, 0] >= x_start) & (gaussians_pixel[b, :, 0] <= x_end) & \
+                            (gaussians_pixel[b, :, 1] >= y_start) & (gaussians_pixel[b, :, 1] <= y_end) & \
+                            (gaussians_pixel[b, :, 2] >= z_start) & (gaussians_pixel[b, :, 2] <= z_end)
+                gaussians_pixel_mask_i = gaussians_pixel[b][mask_pixel_i]
+                gaussians_feat_mask_i = gaussians_feat[b][mask_pixel_i]
+                gaussians_pixel_mask.append(gaussians_pixel_mask_i)
+                gaussians_feat_mask.append(gaussians_feat_mask_i)
         with self.benchmarker.time("volume_gs"):
             gaussians_volume = self.volume_gs(
                     [img_feats[0]],
