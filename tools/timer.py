@@ -1,4 +1,5 @@
 import time
+import torch
 from collections import OrderedDict
 
 class Timer:
@@ -24,6 +25,8 @@ class Timer:
             self.times[name] = dt
 
     def update(self, name='default'):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         now = time.time()
         dt = now - self.last_time
         self.times[name] = dt
