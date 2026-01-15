@@ -20,6 +20,7 @@ import wandb
 from accelerate import Accelerator
 from accelerate.utils import set_seed, convert_outputs_to_fp32, DistributedType, ProjectConfiguration
 from tools.visualization import depths_to_colors
+from tools.param_count import build_param_table
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -92,9 +93,9 @@ def main(args):
     from builder import builder as model_builder
     
     my_model = model_builder.build(cfg.model).to(accelerator.device)
-    n_parameters = sum(p.numel() for p in my_model.parameters() if p.requires_grad)
-    if logger is not None:
-        logger.info(f'Number of params: {n_parameters}')
+    if accelerator.is_main_process and logger is not None:
+        for line in build_param_table(my_model):
+            logger.info(line)
 
     # generate datasets
     dataset = getattr(datasets, dataset_config.dataset_name)

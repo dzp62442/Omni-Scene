@@ -113,13 +113,13 @@ This command will generate and save 360 degree exploring videos for the reconstr
 
 ```bash
 CUDA_VISIBLE_DEVICES=7 accelerate launch --config-file accelerate_config.yaml demo.py \
-    --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
-    --output-dir outputs/omni_gs_nusc_novelview_r50_224x400_vis \
+    --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_112x200.py \
+    --output-dir outputs/omni_gs_nusc_novelview_r50_112x200_vis \
     --load-from checkpoints/checkpoint-100000
 ```
 where
 - `--config-file accelerate_config.yaml` is the relative path of accelrate configuration file;
-- `--py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py"` is the relative path of Omni-Scene's configuration file;
+- `--py-config configs/OmniScene/omni_gs_nusc_novelview_r50_112x200.py"` is the relative path of Omni-Scene's configuration file;
 - `--output-dir` is the relative path of output directory. We save the rendered videos here.
 - `--load-from` is the relative path of model weights that you want to use.
 
@@ -134,13 +134,13 @@ The training script is as follows. We have released our pre-trained weights [her
 
 ```bash
 CUDA_VISIBLE_DEVICES=7 accelerate launch --config-file accelerate_config.yaml train.py \
-    --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
-    --work-dir workdirs/omni_gs_nusc_novelview_r50_224x400 \
+    --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_112x200.py \
+    --work-dir workdirs/omni_gs_nusc_novelview_r50_112x200 \
     # --resume-from path/to/checkpoints
 ```
 where
 - `--config-file accelerate_config.yaml` is the relative path of accelrate configuration file;
-- `--py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py"` is the relative path of Omni-Scene's configuration file;
+- `--py-config configs/OmniScene/omni_gs_nusc_novelview_r50_112x200.py"` is the relative path of Omni-Scene's configuration file;
 - `--work-dir` is the relative path of experiment work directory. We save logs, checkpoints, visualizations, plys here;
 - (optional) `--resume-from` is the relative path of checkpoints that you want to resume from. You should delete this argument for training from scratch.
 
@@ -153,13 +153,13 @@ The evaluation script is as follows.
 
 ```bash
 CUDA_VISIBLE_DEVICES=7 accelerate launch --config-file accelerate_config.yaml evaluate.py \
-    --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py \
-    --output-dir outputs/omni_gs_nusc_novelview_r50_224x400 \
+    --py-config configs/OmniScene/omni_gs_nusc_novelview_r50_112x200.py \
+    --output-dir outputs/omni_gs_nusc_novelview_r50_112x200 \
     --load-from checkpoints/checkpoint-100000 --mini
 ```
 where
 - `--config-file accelerate_config.yaml` is the relative path of accelrate configuration file;
-- `--py-config configs/OmniScene/omni_gs_nusc_novelview_r50_224x400.py"` is the relative path of Omni-Scene's configuration file;
+- `--py-config configs/OmniScene/omni_gs_nusc_novelview_r50_112x200.py"` is the relative path of Omni-Scene's configuration file;
 - `--output-dir` is the relative path of output directory. We save the results and visualizations here.
 - `--load-from` is the relative path of model weights that you want to evaluate.
 
