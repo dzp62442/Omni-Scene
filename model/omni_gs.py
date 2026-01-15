@@ -339,17 +339,17 @@ class OmniGaussian(BaseModule):
         data_dict = self.get_data(batch)
         img = data_dict["imgs"]
         bs = img.shape[0]
-        img_feats = self.extract_img_feat(img=img, status="test")
+        
+        with self.benchmarker.time("forward"):
+            img_feats = self.extract_img_feat(img=img, status="test")
 
-        # pixel-gs prediction
-        with self.benchmarker.time("pixel_gs"):
+            # pixel-gs prediction
             gaussians_pixel, gaussians_feat = self.pixel_gs(
                     rearrange(img_feats[0], "b v c h w -> (b v) c h w"),
                     data_dict["depths"], data_dict["confs"], data_dict["pluckers"],
                     data_dict["rays_o"], data_dict["rays_d"], status="test")
 
-        # volume-gs prediction
-        with self.benchmarker.time("mask_pixel"):
+            # volume-gs prediction
             pc_range = self.dataset_params.pc_range
             x_start, y_start, z_start, x_end, y_end, z_end = pc_range
             gaussians_pixel_mask, gaussians_feat_mask = [], []
@@ -361,14 +361,15 @@ class OmniGaussian(BaseModule):
                 gaussians_feat_mask_i = gaussians_feat[b][mask_pixel_i]
                 gaussians_pixel_mask.append(gaussians_pixel_mask_i)
                 gaussians_feat_mask.append(gaussians_feat_mask_i)
-        with self.benchmarker.time("volume_gs"):
+
             gaussians_volume = self.volume_gs(
                     [img_feats[0]],
                     gaussians_pixel_mask,
                     gaussians_feat_mask,
                     data_dict["img_metas"], status="test")
+            
+            gaussians_all = torch.cat([gaussians_pixel, gaussians_volume], dim=1)
         
-        gaussians_all = torch.cat([gaussians_pixel, gaussians_volume], dim=1)
         bs = gaussians_all.shape[0]
         render_c2w = data_dict["output_c2ws"]
         render_fovxs = data_dict["output_fovxs"]
