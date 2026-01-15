@@ -38,10 +38,10 @@ dataset_params = dict(
     use_last=use_last,
     batch_size_train=1,
     batch_size_val=1,
-    batch_size_test=4,
+    batch_size_test=1,
     num_workers=8,
     num_workers_val=8,
-    num_workers_test=4
+    num_workers_test=8
 )
 
 num_cams = 6
