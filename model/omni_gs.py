@@ -433,13 +433,13 @@ class OmniGaussian(BaseModule):
         # forward 3 meters, return, and then rotate. backward 3 meters, return, and then rotate.
         c2w_cf = data_dict["output_c2ws"][:, -6]
         c2w_cf_forward = c2w_cf.clone()
-        c2w_cf_forward[..., 1, 3] = c2w_cf_forward[..., 1, 3] + 3
+        c2w_cf_forward[..., 1, 3] = c2w_cf_forward[..., 1, 3] + 2
         c2w_cfr = data_dict["output_c2ws"][:, -5]
         c2w_cfl = data_dict["output_c2ws"][:, -4]
         c2w_cb = data_dict["output_c2ws"][:, -3]
-        c2w_cb[..., 1, 3] = c2w_cb[..., 1, 3] + 1.5
+        c2w_cb[..., 1, 3] = c2w_cb[..., 1, 3]
         c2w_cb_backward = c2w_cb.clone()
-        c2w_cb_backward[..., 1, 3] = c2w_cb_backward[..., 1, 3] - 3
+        c2w_cb_backward[..., 1, 3] = c2w_cb_backward[..., 1, 3] - 2
         c2w_cbl = data_dict["output_c2ws"][:, -2]
         c2w_cbr = data_dict["output_c2ws"][:, -1]
         # cf -> cfr -> cbr -> cb -> cbl -> cfl -> cf
