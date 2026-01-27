@@ -28,7 +28,9 @@ from model.utils.typing import *
 from model.utils.camera import get_camera, rescale_intrisic
 from model.utils.ops import get_cam_info_gaussian, get_ray_directions, get_rays
 
-bins_demo = ['scene04219bfdc9004ba2af16d3079ecc4353_bin061',
+bins_demo = ['scenee7ef871f77f44331aefdebc24ec034b7_bin010',
+'scenee7ef871f77f44331aefdebc24ec034b7_bin200',
+'scene04219bfdc9004ba2af16d3079ecc4353_bin061',
 'scene07aed9dae37340a997535ad99138e243_bin058',
 'scene0ac05652a4c44374998be876ba5cd6fd_bin121',
 'scene16e50a63b809463099cb4c378fe0641e_bin231',
