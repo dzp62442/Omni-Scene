@@ -1,0 +1,18 @@
+# Target-only overrides; original OmniScene settings are inherited unchanged.
+_base_ = ['../OmniScene/omni_gs_nusc_novelview_r50_112x200.py']
+
+exp_name = 'omni_gs_ddad_r50_112x200'
+work_dir = 'workdirs/omni_gs_ddad_r50_112x200'
+output_dir = 'outputs/omni_gs_ddad_r50_112x200'
+protocol = 'svfgs_single_frame_v1'
+zero_shot = False
+split = 'test'
+load_from = None
+
+dataset_params = dict(
+    dataset_name='DDADDataset',
+    processed_root='data/DDAD/processed',
+    only_input=True,
+)
+model = dict(dataset_params=dataset_params)
+eval_args = dict(compute_pcc=False)

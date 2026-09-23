@@ -1,0 +1,99 @@
+"""Checks for the new target entrypoints; original configs remain read-only."""
+
+from copy import deepcopy
+from pathlib import Path
+
+from mmengine.config import Config
+
+from .datasets import DATASETS
+from .datasets.common import PROJECT_ROOT, PROTOCOL, project_path
+
+
+def model_signature(cfg):
+    model = deepcopy(dict(cfg.model))
+    # Dataset identity/loader options are not learned parameters. Spatial range is.
+    params = model.pop("dataset_params")
+    model["pc_range"] = params["pc_range"]
+    return model
+
+
+def load_config(path, training=False):
+    cfg = Config.fromfile(str(project_path(path)))
+    params = cfg.dataset_params
+    if params.dataset_name not in DATASETS:
+        raise ValueError("cross_dataset accepts only PandaSetDataset or DDADDataset")
+    if cfg.get("protocol") != PROTOCOL:
+        raise ValueError(f"Expected protocol={PROTOCOL!r}")
+    if training and cfg.get("zero_shot", False):
+        raise ValueError("A zero-shot evaluation config cannot be used for training")
+    if (not params.get("only_input", False) or not params.use_center
+            or params.use_first or params.use_last):
+        raise ValueError("Only center-frame 6→6 reconstruction is supported")
+    if dict(cfg.model.dataset_params) != dict(params):
+        raise ValueError("model.dataset_params and dataset_params must agree")
+    resolution = list(params.resolution)
+    for label, actual in (
+        ("resolution", cfg.resolution), ("camera_args", cfg.camera_args.resolution),
+        ("model.camera_args", cfg.model.camera_args.resolution),
+        ("loss_args", cfg.loss_args.perceptual_resolution),
+        ("model.loss_args", cfg.model.loss_args.perceptual_resolution),
+    ):
+        if list(actual) != resolution:
+            raise ValueError(f"Resolution mismatch in {label}; choose the matching inherited config")
+    if cfg.num_cams != 6 or cfg.model.pixel_gs.num_cams != 6:
+        raise ValueError("Target datasets require six cameras")
+    if cfg.model.loss_args != cfg.loss_args or cfg.model.dataset_params.pc_range != cfg.point_cloud_range:
+        raise ValueError("Inconsistent nested loss/spatial configuration")
+    return cfg
+
+
+def source_declaration(cfg, source_dataset=None, source_config=None):
+    dataset = source_dataset or cfg.get("source_dataset")
+    config_path = source_config or cfg.get("source_config")
+    target = DATASETS[cfg.dataset_params.dataset_name].dataset_name
+    if cfg.get("zero_shot", False):
+        if not dataset or not config_path:
+            raise ValueError("Zero-shot evaluation requires source_dataset and source_config")
+        if dataset.casefold().removesuffix("dataset") == target.casefold():
+            raise ValueError("Source and target datasets must differ in zero-shot evaluation")
+    result = {"dataset": dataset, "config": None, "verification": "declared_only"}
+    if config_path:
+        path = project_path(config_path).resolve(strict=True)
+        source = Config.fromfile(str(path))
+        if model_signature(source) != model_signature(cfg):
+            raise ValueError("Source/target model, resolution or spatial range differs")
+        declared_name = (dataset or "").casefold().removesuffix("dataset")
+        if dataset and declared_name != source.dataset_params.dataset_name.casefold().removesuffix("dataset"):
+            raise ValueError("Source dataset declaration disagrees with source config")
+        result["config"] = str(path)
+    return result
+
+
+def output_path(path, protected=()):
+    destination = project_path(path).resolve()
+    # Protect both local symlink entrances and the underlying shared datasets.
+    roots = [PROJECT_ROOT / "data", PROJECT_ROOT / "checkpoints"]
+    roots += [PROJECT_ROOT / "data" / name for name in ("nuScenes", "PandaSet", "DDAD")]
+    roots += [Path(p) for p in protected]
+    for root in roots:
+        root = root.resolve()
+        if destination == root or root in destination.parents or destination in root.parents:
+            raise ValueError(f"Output overlaps protected data/checkpoint path: {destination}")
+    return destination
+
+
+def training_directory(cfg, requested=None):
+    path = output_path(requested or cfg.work_dir)
+    if path.exists() and any(path.iterdir()):
+        # Resume only a directory that already contains a target config snapshot.
+        # This is not a new optimizer/checkpoint format or data-position tracker.
+        snapshots = list(path.glob("*.py"))
+        if not snapshots:
+            raise ValueError(f"Nonempty workdir lacks a target config snapshot: {path}")
+        for snapshot in snapshots:
+            previous = load_config(snapshot, training=True)
+            if (previous.dataset_params.dataset_name != cfg.dataset_params.dataset_name
+                    or previous.exp_name != cfg.exp_name
+                    or model_signature(previous) != model_signature(cfg)):
+                raise ValueError(f"Workdir belongs to a different experiment: {path}")
+    return path

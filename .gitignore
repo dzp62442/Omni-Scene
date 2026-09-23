@@ -1,4 +1,6 @@
 nuScenes
+/data/PandaSet
+/data/DDAD
 checkpoints/
 taming/
 test_bin_images/
