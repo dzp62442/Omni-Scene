@@ -7,6 +7,7 @@ from mmengine.config import Config
 
 from .datasets import DATASETS
 from .datasets.common import PROJECT_ROOT, PROTOCOL, project_path
+from .datasets.assets import build_eval_mask_config, validate_protocol
 
 
 def model_signature(cfg):
@@ -26,9 +27,12 @@ def load_config(path, training=False):
         raise ValueError(f"Expected protocol={PROTOCOL!r}")
     if training and cfg.get("zero_shot", False):
         raise ValueError("A zero-shot evaluation config cannot be used for training")
-    if (not params.get("only_input", False) or not params.use_center
+    if (not isinstance(params.only_input, bool) or not params.use_center
             or params.use_first or params.use_last):
-        raise ValueError("Only center-frame 6→6 reconstruction is supported")
+        raise ValueError("Temporal18 requires six center inputs; only_input selects six diagnostic targets")
+    validate_protocol(params.temporal_cfg)
+    if params.temporal_cfg.dataset != DATASETS[params.dataset_name].dataset_name.lower():
+        raise ValueError("Temporal configuration dataset mismatch")
     if dict(cfg.model.dataset_params) != dict(params):
         raise ValueError("model.dataset_params and dataset_params must agree")
     resolution = list(params.resolution)
@@ -44,7 +48,36 @@ def load_config(path, training=False):
         raise ValueError("Target datasets require six cameras")
     if cfg.model.loss_args != cfg.loss_args or cfg.model.dataset_params.pc_range != cfg.point_cloud_range:
         raise ValueError("Inconsistent nested loss/spatial configuration")
+    evaluation_mask_config(cfg, "train" if training else cfg.get("split", "test"), training=training)
+    if training:
+        # Fail before constructing Accelerator/model; never substitute test assets.
+        from .datasets import build_dataset
+        build_dataset(params, "train")
     return cfg
+
+
+def evaluation_mask_config(cfg, split, enabled=None, training=False):
+    enabled = cfg.eval_args.get("eval_use_ego_mask", False) if enabled is None else enabled
+    if not isinstance(enabled, bool):
+        raise ValueError("eval_use_ego_mask must be boolean")
+    if enabled and (training or split == "train" or cfg.dataset_params.dataset_name != "DDADDataset"):
+        raise ValueError("Ego masks require DDAD independent evaluation with split=test/val")
+    cfg.eval_args.eval_use_ego_mask = enabled
+    if not enabled:
+        return None
+    mask_cfg = dict(cfg.eval_args.eval_mask_cfg)
+    if mask_cfg != build_eval_mask_config():
+        raise ValueError("Ego mask metric configuration must match SVF-GS ddad_ego_novel12_v1")
+    return mask_cfg
+
+
+def evaluation_output_directory(cfg):
+    tag = cfg.dataset_params.temporal_cfg.output_tag
+    if cfg.dataset_params.only_input:
+        tag += "_input6"
+    if cfg.eval_args.eval_use_ego_mask:
+        tag += cfg.eval_args.eval_mask_cfg.output_suffix
+    return str(Path(cfg.output_dir) / tag)
 
 
 def source_declaration(cfg, source_dataset=None, source_config=None):

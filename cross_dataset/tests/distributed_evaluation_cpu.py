@@ -34,7 +34,7 @@ def main():
             assert summary["evaluated_count"] == count
             assert summary["complete_split"] == (maximum is None)
             assert len({r["bin_token"] for r in ordered}) == count
-            assert summary["padding_records_discarded"] == len(gathered) - count
+            assert summary["padding_records_discarded"] == len(gathered) - count * 3
             accelerator.print({"cpu_world_size": accelerator.num_processes, **summary})
         errors = gather_object(["synthetic rank failure"] if accelerator.process_index == 1 else [])
         assert errors == ["synthetic rank failure"]

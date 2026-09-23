@@ -1,6 +1,6 @@
-from .common import SingleFrameDataset
+from .common import TemporalDataset
 
 
-class PandaSetDataset(SingleFrameDataset):
+class PandaSetDataset(TemporalDataset):
     dataset_name = "PandaSet"
     depth_directory = "dptm"

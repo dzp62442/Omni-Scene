@@ -1,78 +1,74 @@
-"""Real artifacts and independently executed SVF-GS reference definitions, CPU only."""
+"""Small real-asset CPU checks; reference tensors are exported under /tmp."""
 
 import ast
-import copy
+from copy import deepcopy
 import json
 import os
-import os.path as osp
 from pathlib import Path
-import pickle as pkl
 import tempfile
-from types import SimpleNamespace
+from unittest.mock import patch
 
-import numpy as np
-import PIL
-from PIL import Image
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 from cross_dataset.datasets import PandaSetDataset, DDADDataset
-from cross_dataset.datasets.common import PROJECT_ROOT, CAMERA_TYPES
+from cross_dataset.datasets.common import PROJECT_ROOT
+from cross_dataset.datasets.assets import build_eval_mask_config, safe_asset_path
 from cross_dataset.tests.cpu_only import CPUOnlyTest
 
-REFERENCE = PROJECT_ROOT.parent / "SVF-GS"
 
-
-def definitions(path, names, namespace):
-    """Execute only reference definitions; do not import its model/CUDA packages."""
-    tree = ast.parse(path.read_text())
-    selected = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names]
-    assert {n.name for n in selected} == set(names)
-    future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
-    module = ast.fix_missing_locations(ast.Module(body=[future, *selected], type_ignores=[]))
-    exec(compile(module, str(path), "exec"), namespace)
-
-
-def reference_class(target):
-    namespace = dict(np=np, torch=torch, PIL=PIL, Image=Image, Path=Path, json=json,
-                     os=os, osp=osp, copy=copy, pkl=pkl, Dataset=Dataset)
-    definitions(REFERENCE / "model/utils/image.py", ["HWC3"], namespace)
-    definitions(REFERENCE / "model/utils/ops.py", ["get_ray_directions", "get_rays"], namespace)
-    definitions(REFERENCE / "data/transforms/loading.py", ["load_info"], namespace)
-    lower = target.lower()
-    definitions(REFERENCE / f"data/transforms/{lower}_loading.py", [f"load_{lower}_conditions"], namespace)
-    definitions(REFERENCE / f"data/{lower}_dataset.py", [f"{target}Dataset"], namespace)
-    return namespace[f"{target}Dataset"]
+def reference_fixture():
+    path = Path(os.environ.get("OMNISCENE_REFERENCE_FIXTURE", "/tmp/omniscene-temporal18/reference")).resolve()
+    if not path.is_relative_to(Path("/tmp")):
+        raise ValueError("CPU reference fixtures and comparison reports must stay in /tmp")
+    return path
 
 
 class RealDataTests(CPUOnlyTest):
-    def test_splits_reference_values_and_projection(self):
+    def test_reference_values_splits_and_projection(self):
+        root = reference_fixture()
+        if not (root / "metadata.json").is_file():
+            self.skipTest("Export the fixed SVF-GS CPU reference to /tmp first")
+        metadata = json.loads((root / "metadata.json").read_text())
+        self.assertEqual(metadata["reference_commit"], "af39b31d984ba128020282764265fa38d31ce767")
         max_errors = {}
-        for target, cls in (("PandaSet", PandaSetDataset), ("DDAD", DDADDataset)):
-            if not (PROJECT_ROOT / "data" / target / "processed").exists() or not REFERENCE.exists():
-                self.skipTest("Real datasets and SVF-GS reference checkout are required")
-            reference = reference_class(target)
-            params = SimpleNamespace(**{f"{target.lower()}_processed_root": str(PROJECT_ROOT / "data" / target / "processed")})
-            for resolution in ((112, 200), (224, 400)):
-                for split in ("train", "val", "test"):
-                    dataset = cls(resolution, split)
-                    original = reference(params, resolution=list(resolution), split=split, load_rel_depth=False)
-                    self.assertEqual(dataset.bin_tokens, original.bin_tokens)
-                    self.assertEqual(len(dataset), {"PandaSet": {"train": 3120, "val": 10, "test": 3120},
-                                                   "DDAD": {"train": 1265, "val": 10, "test": 395}}[target][split])
-                    for index in (0, len(dataset) // 2, len(dataset) - 1):
-                        actual, expected = dataset[index], original[index]
-                        for section in ("inputs", "inputs_pix", "inputs_vol", "outputs"):
-                            for key, tensor in actual[section].items():
-                                error = (tensor - expected[section][key]).abs().max().item()
-                                label = f"{target}/{section}.{key}"
-                                max_errors[label] = max(max_errors.get(label, 0), error)
-                                torch.testing.assert_close(tensor, expected[section][key], rtol=1e-6, atol=1e-6)
-                        self.assertNotIn("mask", actual["outputs"])
-                        self.assertIs(actual["outputs"]["rgb"], actual["inputs"]["rgb"])
-                        self.assertIs(actual["outputs"]["depth"], actual["inputs_pix"]["depth_m"])
-                        self.check_projection(actual, resolution)
-        print("Reference max absolute differences:", json.dumps(max_errors, sort_keys=True))
+        for entry in metadata["data"]:
+            name, resolution = entry["dataset"], entry["resolution"]
+            cls = PandaSetDataset if name == "pandaset" else DDADDataset
+            mask_cfg = build_eval_mask_config() if name == "ddad" else None
+            dataset = cls(resolution, "test", eval_mask_cfg=mask_cfg)
+            self.assertEqual(dataset.bin_tokens, entry["tokens"])
+            self.assertEqual(len(dataset), 264 if name == "pandaset" else 324)
+            self.assertEqual(cls(resolution, "val").bin_tokens, entry["val_tokens"])
+            for index in (0, len(dataset)//2, len(dataset)-1):
+                actual = dataset[index]
+                expected = torch.load(root / f"{name}_{resolution[0]}_{index}.pt", map_location="cpu")
+                for section in ("inputs", "inputs_pix", "inputs_vol", "outputs"):
+                    for key, tensor in actual[section].items():
+                        reference = expected[section][key]
+                        error = (tensor.float()-reference.float()).abs().max().item()
+                        label = f"{name}/{resolution[0]}/{section}.{key}"
+                        max_errors[label] = max(max_errors.get(label, 0), error)
+                        torch.testing.assert_close(tensor, reference, atol=1e-6, rtol=1e-6)
+                self.assertNotIn("mask", actual["outputs"])
+                torch.testing.assert_close(actual["outputs"]["rgb"][12:], actual["inputs"]["rgb"], atol=0, rtol=0)
+                for field in ("depth_m", "conf_m", "c2w", "rays_o", "rays_d"):
+                    torch.testing.assert_close(actual["outputs"][field][12:], actual["inputs_pix"][field], atol=0, rtol=0)
+                self.check_projection(actual, resolution)
+        (root.parent / "loader-comparison.json").write_text(json.dumps(max_errors, indent=2)+"\n")
+
+    def test_prepared_file_inventory_and_missing_train(self):
+        counts = {}
+        for cls in (PandaSetDataset, DDADDataset):
+            with self.assertRaisesRegex(FileNotFoundError, "train temporal18"):
+                cls(split="train")
+            dataset = cls(split="test")
+            paths = set()
+            for token in dataset.bin_tokens:
+                paths.update(dataset.required_files(token))
+            self.assertEqual([str(p) for p in paths if not p.is_file()], [])
+            counts[dataset.dataset_name] = {"bins": len(dataset), "required_files": len(paths)}
+        print("Read-only file inventory:", json.dumps(counts))
 
     def check_projection(self, sample, resolution):
         pix = sample["inputs_pix"]
@@ -86,20 +82,6 @@ class RealDataTests(CPUOnlyTest):
         expected = torch.stack([u, v], -1).expand_as(uv)
         torch.testing.assert_close(uv, expected, atol=2e-3, rtol=0)
 
-    def test_full_file_inventory_and_overlap(self):
-        counts = {}
-        for cls in (PandaSetDataset, DDADDataset):
-            train, test = cls(split="train"), cls(split="test")
-            tokens = sorted(set(train.bin_tokens) | set(test.bin_tokens))
-            overlap = len(set(train.bin_tokens) & set(test.bin_tokens))
-            self.assertEqual(overlap, 3120 if cls is PandaSetDataset else 0)
-            paths = set()
-            for token in tokens:
-                paths.update(train.required_files(token))
-            missing = [str(path) for path in paths if not path.is_file()]
-            self.assertEqual(missing, [])
-            counts[train.dataset_name] = {"unique_bins": len(tokens), "required_files": len(paths), "train_test_overlap": overlap}
-        print("Full artifact inventory:", json.dumps(counts))
 
     def test_batch_and_working_directory_independence(self):
         dataset = DDADDataset((112, 200), "val")
@@ -112,6 +94,7 @@ class RealDataTests(CPUOnlyTest):
                 self.assertEqual(batch["bin_token"], dataset.bin_tokens[:2])
         finally:
             os.chdir(previous)
+
 
     def test_original_get_data_contract_without_constructing_model(self):
         # Execute the unchanged get_data/plucker methods on a tiny CPU holder.
@@ -129,45 +112,78 @@ class RealDataTests(CPUOnlyTest):
             data = holder_type().get_data(batch)
             self.assertEqual(data["imgs"].shape, (2, 6, 3, 112, 200))
             self.assertEqual(data["pluckers"].shape, (2, 6, 6, 112, 200))
-            self.assertEqual(data["output_positions"].shape, (2, 6, 112, 200, 3))
+            self.assertEqual(data["output_positions"].shape, (2, 18, 112, 200, 3))
             self.assertEqual(data["img_metas"][0]["lidar2img"].shape, (6, 4, 4))
             self.assertTrue(torch.equal(data["output_depths"], data["output_depths_m"]))
 
 
+
 class InvalidDataTests(CPUOnlyTest):
-    def test_invalid_split_and_temporal_flags(self):
+    def test_split_flags_paths_and_missing_assets(self):
         for split in ("total", "mini-test", "demo"):
             with self.assertRaisesRegex(ValueError, "split must"):
                 PandaSetDataset(split=split)
-        for kwargs in ({"only_input": False}, {"use_first": True}, {"use_center": False}):
-            with self.assertRaisesRegex(ValueError, "center-only"):
+        for kwargs in ({"only_input": 1}, {"use_first": True}, {"use_center": False}):
+            with self.assertRaisesRegex(ValueError, "six center inputs"):
                 DDADDataset(**kwargs)
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            with self.assertRaisesRegex(FileNotFoundError, "prepare them in SVF-GS"):
+                DDADDataset(processed_root=tmp, split="test")
+            for value in ("../escape", "/etc/passwd"):
+                with self.assertRaisesRegex(ValueError, "relative"):
+                    safe_asset_path(tmp, value)
 
-    def test_mask_free_fixture_and_actionable_missing_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "bin_infos").mkdir()
-            (root / "bins_train.json").write_text(json.dumps({"bins": ["sample"]}))
-            sensors = {}
-            for index, camera in enumerate(CAMERA_TYPES):
-                relative = Path("scene") / camera
-                image = root / "images_small" / relative / "00.jpg"
-                param = root / "params_small" / relative / "00.json"
-                depth = root / "dptm_small" / relative / "00_dpt.npy"
-                for path in (image, param, depth):
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                Image.new("RGB", (48, 32), color=(20 + index, 40, 60)).save(image)
-                param.write_text(json.dumps({"camera_intrinsic": [[30, 0, 24], [0, 31, 16], [0, 0, 1]]}))
-                np.save(depth, np.full((32, 48), 7.0, dtype=np.float32))
-                np.save(depth.with_name("00_conf.npy"), np.ones((32, 48), dtype=np.float32))
-                sensors[camera] = [dict(data_path=f"/old/project/data/DDAD/processed/images_small/{relative}/00.jpg",
-                                       sensor2lidar_transform=np.eye(4), sensor2lidar_rotation=np.eye(3),
-                                       sensor2lidar_translation=np.zeros(3))]
-            (root / "bin_infos/sample.pkl").write_bytes(pkl.dumps({"sensor_info": sensors}))
-            dataset = DDADDataset((16, 24), processed_root=root)
-            sample = dataset[0]
-            self.assertNotIn("mask", sample["outputs"])
-            self.assertTrue(torch.all(sample["outputs"]["depth"] == 7))
-            depth.unlink()
-            with self.assertRaisesRegex(FileNotFoundError, "DDAD/train/sample.*00_dpt.npy"):
-                dataset[0]
+    def test_reject_changed_selection_incomplete_manifest_and_bins(self):
+        source = PROJECT_ROOT / "data/DDAD/processed"
+        for kind in ("selection", "manifest", "bins"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+                root = Path(tmp)
+                for prefix in ("selection", "manifest", "bins"):
+                    payload = json.loads((source/f"{prefix}_test.json").read_text())
+                    if prefix == kind:
+                        if kind == "selection": payload["selection_sha256"] = "wrong"
+                        if kind == "manifest": payload["complete"] = False
+                        if kind == "bins": payload["bins"] = payload["bins"][::-1]
+                    (root/f"{prefix}_test.json").write_text(json.dumps(payload))
+                with self.assertRaises(ValueError):
+                    DDADDataset(split="test", processed_root=root)
+
+    def test_ego_mask_switch_and_corruptions(self):
+        from cross_dataset.datasets import ego_mask
+        cfg = build_eval_mask_config()
+        plain = DDADDataset((112, 200), "val")[0]
+        dataset = DDADDataset((112, 200), "val", eval_mask_cfg=cfg)
+        enabled = dataset[0]
+        for key, value in plain["outputs"].items():
+            self.assertTrue(torch.equal(value, enabled["outputs"][key]))
+        self.assertNotIn("eval_mask", plain["outputs"])
+        area = enabled["outputs"]["eval_mask"]
+        self.assertEqual(area.shape, (18, 112, 200))
+        self.assertTrue(area[12:].all() and area[:2].all())
+        self.assertFalse(area[2:12].all())
+        diagnostic = DDADDataset((112, 200), "val", only_input=True, eval_mask_cfg=cfg)[0]
+        self.assertEqual(diagnostic["outputs"]["eval_mask"].shape, (6, 112, 200))
+        self.assertTrue(diagnostic["outputs"]["eval_mask"].all())
+        with self.assertRaisesRegex(ValueError, "only supported"):
+            PandaSetDataset(split="val", eval_mask_cfg=cfg)
+        original = ego_mask.read_json
+        for kind in ("selection", "missing", "sha", "camera", "intrinsic", "crop", "scene", "encoding"):
+            def corrupt(path):
+                payload = original(path)
+                if Path(path).name != "manifest.json":
+                    return payload
+                variant = next(iter(payload["variants"].values()))
+                first = next(iter(payload["masks"].values()))
+                if kind == "selection": payload["selection_sha256"] = "wrong"
+                if kind == "missing": first["path"] = "absent.png"
+                if kind == "sha": first["sha256"] = "wrong"
+                if kind == "camera": variant["camera"] = "invalid"
+                if kind == "intrinsic": variant["intrinsic_raw"][0][2] += 1
+                if kind == "crop":
+                    for v in payload["variants"].values(): v["pixel_transform"][0][2] += 1
+                if kind == "scene": payload["scene_camera_to_variant"].clear()
+                if kind == "encoding": payload["mask_values"]["0"] = "valid"
+                return payload
+            with self.subTest(kind=kind), patch.object(ego_mask, "read_json", side_effect=corrupt):
+                with self.assertRaises((ValueError, FileNotFoundError)):
+                    DDADDataset((112, 200), "val", eval_mask_cfg=cfg)[0]

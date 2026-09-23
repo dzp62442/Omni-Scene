@@ -1,10 +1,11 @@
-"""Target-only all_6 metrics, explicit distributed padding and coverage checks."""
+"""Target-only temporal18 metrics, explicit distributed padding and coverage checks."""
 
 import csv
 import json
 import math
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -37,71 +38,129 @@ class EvaluationShard(Dataset):
         return sample
 
 
-def batch_metrics(preds, gts, tokens, indices, padding, compute_pcc=False, metrics=None):
-    if metrics is None:
-        # Original implementations, unchanged; LPIPS is initialized only at runtime.
-        from tools.metrics import compute_psnr, compute_ssim, compute_lpips, compute_pcc as pcc
-        metrics = {"psnr": compute_psnr, "ssim": compute_ssim, "lpips": compute_lpips, "pcc": pcc}
+def view_groups(views):
+    if views == 18:
+        return {"all_18": slice(0, 18), "novel_12": slice(0, 12), "input_6": slice(12, 18)}
+    if views == 6:
+        return {"all_6": slice(0, 6)}
+    raise ValueError("Only 18 target views or explicit 6-view diagnostics are supported")
+
+
+def batch_metrics(preds, gts, tokens, indices, padding, compute_pcc=False, metrics=None,
+                  expected_views=18, eval_mask=None, mask_cfg=None, identity=None,
+                  scene_ids=None, view_metadata=None):
+    groups = view_groups(expected_views)
     predicted, target = preds["img"], gts["img"]
-    if predicted.ndim != 5 or predicted.shape != target.shape or predicted.shape[1:3] != (6, 3):
-        raise ValueError("Expected matching [B, 6, 3, H, W] RGB predictions and targets")
-    batch_size = predicted.shape[0]
+    if predicted.ndim != 5 or predicted.shape != target.shape or predicted.shape[1:3] != (expected_views, 3):
+        raise ValueError(f"Expected matching [B, {expected_views}, 3, H, W] RGB predictions and targets")
+    batch_size, views, _, height, width = predicted.shape
     if len(tokens) != batch_size or len(indices) != batch_size or len(padding) != batch_size:
         raise ValueError("Token/index/padding count differs from prediction batch size")
     for label, tensor in (("prediction", predicted), ("target", target),
-                          ("depth", preds["depth"]), ("gaussian", preds["gaussian"])):
+                          ("depth", preds["depth"]), ("reference depth", gts["depth_m"]),
+                          ("gaussian", preds["gaussian"])):
         if not torch.isfinite(tensor).all():
             raise ValueError(f"Non-finite {label}")
-    if preds["depth"].shape != (batch_size, 6, *predicted.shape[-2:]):
-        raise ValueError("Expected [B, 6, H, W] predicted depth")
-    values = {name: metrics[name](target.flatten(0, 1), predicted.flatten(0, 1)).reshape(batch_size, 6)
-              for name in ("psnr", "ssim", "lpips")}
+    depth_shape = (batch_size, views, height, width)
+    if preds["depth"].shape != depth_shape or gts["depth_m"].shape != depth_shape:
+        raise ValueError("Expected B/V/H/W-matched predicted and reference depth")
+    if (eval_mask is None) != (mask_cfg is None):
+        raise ValueError("Evaluation mask and configuration must be provided together")
+    identity = dict(identity or {})
+    identity.setdefault("pixel_protocol", "full_image")
+    identity.setdefault("mask_manifest_sha256", "")
+    if eval_mask is not None:
+        if (eval_mask.shape != depth_shape or eval_mask.dtype != torch.bool or eval_mask.device != predicted.device
+                or not eval_mask[:, -6:].all()):
+            raise ValueError("Expected boolean target masks with six all-valid input views")
+        if identity["pixel_protocol"] != mask_cfg["pixel_protocol"] or not identity["mask_manifest_sha256"]:
+            raise ValueError("Masked evaluation requires matching pixel protocol and manifest identity")
+    elif identity["pixel_protocol"] != "full_image" or identity["mask_manifest_sha256"]:
+        raise ValueError("Full-image evaluation cannot carry mask identity")
+    flat_gt, flat_pred = target.flatten(0, 1), predicted.flatten(0, 1)
+    if metrics is None:
+        from .metrics import compute_image_metrics, compute_eval_pcc
+        flat_mask = None if eval_mask is None else eval_mask.flatten(0, 1)
+        values = compute_image_metrics(flat_gt, flat_pred, flat_mask, mask_cfg)
+        pcc = compute_eval_pcc
+    else:
+        if eval_mask is not None:
+            raise ValueError("Masked metrics must use the reference-compatible metric implementation")
+        values = {name: metrics[name](flat_gt, flat_pred) for name in ("psnr", "ssim", "lpips")}
+        pcc = lambda gt, pred, mask: metrics["pcc"](gt, pred)
+    values = {name: value.reshape(batch_size, views) for name, value in values.items()}
     records = []
     for b, token in enumerate(tokens):
-        record = {"bin_token": token, "index": int(indices[b]), "padding": bool(padding[b]),
-                  "per_view": {name: value[b].detach().cpu().tolist() for name, value in values.items()},
-                  "all_6": {name: float(value[b].mean()) for name, value in values.items()}}
-        if compute_pcc:
-            record["all_6"]["pcc"] = float(metrics["pcc"](gts["depth_m"][b], preds["depth"][b]))
-        if not all(math.isfinite(v) for v in record["all_6"].values()):
-            raise ValueError(f"Non-finite metrics for {token}")
-        records.append(record)
+        per_view = {name: value[b].detach().cpu().tolist() for name, value in values.items()}
+        per_view["valid_pixels"] = ([height * width] * views if eval_mask is None else
+                                    eval_mask[b].sum((1, 2)).cpu().tolist())
+        if view_metadata is not None:
+            per_view.update({key: [v[b] for v in value] for key, value in view_metadata.items()})
+        for group, selection in groups.items():
+            record = dict(bin_token=str(token), scene_id="" if scene_ids is None else str(scene_ids[b]),
+                          index=int(indices[b]), padding=bool(padding[b]), stage="final", view_group=group,
+                          view_count=selection.stop-selection.start, per_view=per_view, **identity)
+            record.update({name: value[b, selection].double().mean().item() for name, value in values.items()})
+            if compute_pcc:
+                record["pcc"] = pcc(gts["depth_m"][b, selection].contiguous(),
+                                    preds["depth"][b, selection].contiguous(),
+                                    None if eval_mask is None else eval_mask[b, selection]).item()
+            if not all(math.isfinite(record[name]) for name in ("psnr", "ssim", "lpips", *(["pcc"] if compute_pcc else []))):
+                raise ValueError(f"Non-finite metrics for {token}/{group}")
+            records.append(record)
     return records
 
 
-def summarize(records, expected_tokens, full_count, max_samples=None):
+def summarize(records, expected_tokens, full_count, max_samples=None, expected_views=18):
+    groups = view_groups(expected_views)
     if not expected_tokens or len(set(expected_tokens)) != len(expected_tokens):
         raise ValueError("Expected tokens must be unique and nonempty")
-    unique, padding_count = {}, 0
+    if full_count < len(expected_tokens) or (max_samples is None and full_count != len(expected_tokens)):
+        raise ValueError("Selected coverage is inconsistent with full split")
+    unique, protocol_identity = {}, None
     metric_names = None
+    identity_fields = ("pixel_protocol", "mask_manifest_sha256", "selection_sha256", "manifest_sha256")
     for record in records:
-        index = record["index"]
+        index, group = record["index"], record["view_group"]
         if not 0 <= index < len(expected_tokens) or record["bin_token"] != expected_tokens[index]:
             raise ValueError(f"Unexpected evaluation sample: {record['bin_token']}")
-        names = set(record["all_6"])
+        if record["stage"] != "final" or group not in groups or record["view_count"] != groups[group].stop-groups[group].start:
+            raise ValueError("Unexpected stage/view group/view count")
+        current_identity = tuple(record.get(k, "") for k in identity_fields)
+        pixel_protocol, mask_sha = current_identity[:2]
+        if pixel_protocol not in ("full_image", "ddad_ego_novel12_v1") or ((pixel_protocol == "full_image") != (mask_sha == "")):
+            raise ValueError("Invalid evaluation pixel protocol or mask identity")
+        if protocol_identity is not None and protocol_identity != current_identity:
+            raise ValueError("Mixed selection, manifest, pixel protocols or mask identities")
+        protocol_identity = current_identity
+        names = {key for key in ("psnr", "ssim", "lpips", "pcc") if key in record}
         if not {"psnr", "ssim", "lpips"} <= names or (metric_names is not None and names != metric_names):
             raise ValueError("Inconsistent or incomplete metric fields")
         metric_names = names
-        if not all(math.isfinite(v) for v in record["all_6"].values()):
+        if not all(math.isfinite(record[name]) for name in names):
             raise ValueError(f"Non-finite metrics for {record['bin_token']}")
         if record["padding"]:
-            padding_count += 1
             continue
-        if index in unique:
-            raise ValueError(f"Unexpected non-padding duplicate: {record['bin_token']}")
-        unique[index] = record
-    missing = [token for i, token in enumerate(expected_tokens) if i not in unique]
-    if missing:
-        raise ValueError(f"Missing {len(missing)} bins; first missing: {missing[0]}")
-    ordered = [unique[i] for i in range(len(expected_tokens))]
-    # An explicit --max-samples is always a diagnostic/limited run, even >= N.
-    summary = {"status": "limited" if max_samples is not None else "complete",
-               "complete_split": max_samples is None and len(ordered) == full_count,
-               "metric_group": "all_6", "split_count": full_count,
-               "selected_count": len(expected_tokens), "evaluated_count": len(ordered),
-               "padding_records_discarded": padding_count, "max_samples": max_samples,
-               "all_6": {name: math.fsum(r["all_6"][name] for r in ordered) / len(ordered)
-                         for name in sorted(metric_names)}}
+        key = (index, group)
+        if key in unique:
+            raise ValueError(f"Unexpected non-padding duplicate: {record['bin_token']}/{group}")
+        unique[key] = record
+    ordered = []
+    for i, token in enumerate(expected_tokens):
+        for group in groups:
+            if (i, group) not in unique:
+                raise ValueError(f"Missing bin/group: {token}/{group}")
+            ordered.append(unique[i, group])
+    identity = dict(zip(identity_fields, protocol_identity))
+    summary = dict(status="limited" if max_samples is not None else "complete",
+                   complete_split=max_samples is None, split_count=full_count,
+                   selected_count=len(expected_tokens), evaluated_count=len(expected_tokens),
+                   padding_records_discarded=sum(r["padding"] for r in records),
+                   max_samples=max_samples, metric_groups=[f"final/{group}" for group in groups], **identity)
+    for group in groups:
+        summary[f"final/{group}"] = dict(num_bins=len(expected_tokens), **identity,
+            **{name: float(np.asarray([unique[i, group][name] for i in range(len(expected_tokens))], dtype=np.float64).mean())
+               for name in sorted(metric_names)})
     return summary, ordered
 
 
@@ -114,37 +173,44 @@ def write_json(path, value):
 
 def write_results(directory, summary, records):
     directory = Path(directory)
-    names = list(summary["all_6"])
     temporary = directory / "per_bin_metrics.csv.tmp"
+    keys = [key for key in records[0] if key not in ("per_view", "padding", "index")]
     with temporary.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["bin_token", *names])
+        writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
         for record in records:
-            writer.writerow({"bin_token": record["bin_token"], **record["all_6"]})
+            writer.writerow({key: record[key] for key in keys})
     temporary.replace(directory / "per_bin_metrics.csv")
-    write_json(directory / "per_view_metrics.json", records)
+    bins = {record["bin_token"]: dict(bin_token=record["bin_token"], scene_id=record["scene_id"],
+                pixel_protocol=record["pixel_protocol"], mask_manifest_sha256=record["mask_manifest_sha256"],
+                **record["per_view"]) for record in records}
+    write_json(directory / "per_view_metrics.json", list(bins.values()))
     write_json(directory / "evaluation_summary.json", summary)
 
 
 def save_artifacts(directory, preds, gts, records, save_vis=False, save_ply=False):
-    for b, record in enumerate(records):
+    # Group rows share one bin. Iterate once per local batch item, including padding.
+    bins = list({(r["index"], r["padding"]): r for r in records}.values())
+    for b, record in enumerate(bins):
         if record["padding"]:
             continue
         token = record["bin_token"]
         path = Path(directory) / "visualizations" / token
-        # Each real index belongs to exactly one rank, including small tail batches.
         path.mkdir(parents=True, exist_ok=False)
         if save_ply:
             from .ply import save_ply as export_ply
             export_ply(preds["gaussian"][b], str(path / f"{token}.ply"), crop_range=None)
         if save_vis:
             import imageio.v2 as imageio
-            import numpy as np
             from einops import rearrange
             from tools.visualization import depths_to_colors
-            target = rearrange(gts["img"][b], "v c h w -> c h (v w)")
-            predicted = rearrange(preds["img"][b], "v c h w -> c h (v w)")
-            rgb = torch.cat([target, predicted], dim=1).permute(1, 2, 0)
-            rgb = (rgb.detach().cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
-            depth = depths_to_colors(preds["depth"][b].clamp(0, 140))
-            imageio.imwrite(path / f"{token}.png", np.concatenate([rgb, depth], axis=0))
+            views = preds["img"].shape[1]
+            layouts = {"input": list(range(6))} if views == 6 else {
+                "before": list(range(0, 12, 2)), "after": list(range(1, 12, 2)), "input": list(range(12, 18))}
+            for label, selection in layouts.items():
+                target = rearrange(gts["img"][b, selection], "v c h w -> c h (v w)")
+                predicted = rearrange(preds["img"][b, selection], "v c h w -> c h (v w)")
+                rgb = torch.cat([target, predicted], dim=1).permute(1, 2, 0)
+                rgb = (rgb.detach().cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
+                depth = depths_to_colors(preds["depth"][b, selection].clamp(0, 140))
+                imageio.imwrite(path / f"{token}_{label}.png", np.concatenate([rgb, depth], axis=0))

@@ -9,7 +9,7 @@ import traceback
 
 
 def parser():
-    result = argparse.ArgumentParser(description="OmniScene PandaSet/DDAD all_6 evaluation")
+    result = argparse.ArgumentParser(description="OmniScene PandaSet/DDAD temporal18 evaluation")
     result.add_argument("--py-config", required=True)
     result.add_argument("--load-from")
     result.add_argument("--output-dir")
@@ -18,6 +18,8 @@ def parser():
     result.add_argument("--source-dataset")
     result.add_argument("--source-config")
     result.add_argument("--source-metadata", help="Optional hash-bound source_metadata.json")
+    result.add_argument("--eval-use-ego-mask", action=argparse.BooleanOptionalAction, default=None,
+                        help="DDAD only: exclude ego pixels on novel_12; input_6 stays full-image")
     return result
 
 
@@ -35,7 +37,8 @@ def code_record():
 
 def main(args):
     # These imports do not construct the original model or initialize CUDA.
-    from .configuration import load_config, source_declaration, output_path
+    from .configuration import (load_config, source_declaration, output_path,
+                                evaluation_mask_config, evaluation_output_directory)
     from .checkpoint import resolve_checkpoint, checkpoint_record, load_model_weights
     from .datasets import build_dataset, DATASETS
     from .datasets.common import CAMERA_TYPES, PROTOCOL, project_path
@@ -48,10 +51,15 @@ def main(args):
     if args.max_samples is not None and args.max_samples <= 0:
         raise ValueError("--max-samples must be positive")
     split = args.split or cfg.get("split", "test")
-    dataset = build_dataset(cfg.dataset_params, split)
+    mask_cfg = evaluation_mask_config(cfg, split, args.eval_use_ego_mask)
+    dataset = build_dataset(cfg.dataset_params, split, eval_mask_cfg=mask_cfg)
+    data_identity = dataset.evaluation_metadata()
+    output_views = data_identity["output_views"]
+    metric_identity = {key: data_identity[key] for key in (
+        "pixel_protocol", "mask_manifest_sha256", "selection_sha256", "manifest_sha256")}
     count = len(dataset) if args.max_samples is None else min(args.max_samples, len(dataset))
     expected_tokens = dataset.bin_tokens[:count]
-    destination = output_path(args.output_dir or cfg.output_dir,
+    destination = output_path(args.output_dir or evaluation_output_directory(cfg),
                               protected=(project_path(requested_weights), dataset.processed_root))
     cfg.output_dir = str(destination)
     cfg.load_from = str(weights)
@@ -83,8 +91,11 @@ def main(args):
                 "expected_tokens": expected_tokens, "actual_tokens": [],
                 "max_samples": args.max_samples, "processed_root": str(dataset.processed_root.resolve()),
                 "resolution": list(cfg.resolution), "camera_order": list(CAMERA_TYPES),
-                "input_views": 6, "output_views": 6, "protocol": PROTOCOL,
-                "metric_group": "all_6", "aggregation": "view mean per bin, then equal-weight unique-bin mean",
+                "input_views": 6, "output_views": output_views, "protocol": PROTOCOL,
+                "data_provenance": data_identity, **metric_identity,
+                "metric_groups": (["final/all_6"] if output_views == 6 else
+                                  ["final/all_18", "final/novel_12", "final/input_6"]),
+                "aggregation": "float64 view mean per bin, then float64 equal-weight unique-bin mean",
                 "compute_pcc": cfg.eval_args.compute_pcc, "pcc_reference": "Metric3D-v2 metric depth",
                 "world_size": accelerator.num_processes, "code": code_record(),
                 "resolved_config_sha256": hashlib.sha256((destination / "resolved_config.py").read_bytes()).hexdigest(),
@@ -116,13 +127,21 @@ def main(args):
             for batch_index, batch in enumerate(dataloader):
                 batch = send_to_device(batch, accelerator.device)
                 preds, gts, tokens = accelerator.unwrap_model(model).forward_test(batch)
+                if list(tokens) != list(batch["bin_token"]):
+                    raise ValueError("Model bin identity differs from input batch")
+                if mask_cfg is not None and any(h != metric_identity["mask_manifest_sha256"]
+                                               for h in batch["eval_mask_manifest_sha256"]):
+                    raise ValueError("Batch mask manifest identity differs from evaluation")
                 records = batch_metrics(preds, gts, tokens, batch["_evaluation_index"],
-                                        batch["_evaluation_padding"], cfg.eval_args.compute_pcc)
+                                        batch["_evaluation_padding"], cfg.eval_args.compute_pcc,
+                                        expected_views=output_views, eval_mask=batch["outputs"].get("eval_mask"),
+                                        mask_cfg=mask_cfg, identity=metric_identity, scene_ids=batch["scene_id"],
+                                        view_metadata={k: batch[k] for k in ("view_assets", "view_cameras", "view_times")})
                 if cfg.eval_args.save_vis or cfg.eval_args.save_ply:
                     save_artifacts(destination, preds, gts, records, cfg.eval_args.save_vis, cfg.eval_args.save_ply)
                 local_records.extend(records)
                 if batch_index % cfg.print_freq == 0:
-                    accelerator.print(f"all_6 {split}: batch {batch_index + 1}/{len(dataloader)}")
+                    accelerator.print(f"all_{output_views} {split}: batch {batch_index + 1}/{len(dataloader)}")
     except Exception:
         local_error = traceback.format_exc()
     results = gather_object([{"rank": accelerator.process_index, "records": local_records, "error": local_error}])
@@ -134,7 +153,8 @@ def main(args):
             manifest["actual_tokens"] = sorted({r["bin_token"] for r in all_records if not r["padding"]})
             if errors:
                 raise RuntimeError("\n".join(errors))
-            summary, ordered = summarize(all_records, expected_tokens, len(dataset), args.max_samples)
+            summary, ordered = summarize(all_records, expected_tokens, len(dataset), args.max_samples,
+                                         expected_views=output_views)
             write_results(destination, summary, ordered)
             manifest.update({k: summary[k] for k in ("status", "complete_split", "evaluated_count", "padding_records_discarded")})
             manifest["checkpoint"]["strict_model_load"] = "passed"

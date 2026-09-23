@@ -18,9 +18,9 @@ class SyntheticDataset(Dataset):
 
 
 def synthetic_records(batch):
-    target = torch.zeros(len(batch["value"]), 6, 3, 12, 12)
+    target = torch.zeros(len(batch["value"]), 18, 3, 12, 12)
     predicted = target + (batch["value"].float() + 1)[:, None, None, None, None] / 10
-    pred = {"img": predicted, "depth": torch.ones(len(target), 6, 12, 12),
+    pred = {"img": predicted, "depth": torch.ones(len(target), 18, 12, 12),
             "gaussian": torch.ones(len(target), 2, 14)}
     gt = {"img": target, "depth_m": pred["depth"] * 2}
     from tools.metrics import compute_psnr, compute_ssim
@@ -53,15 +53,15 @@ class EvaluationTests(CPUOnlyTest):
                 summary, ordered = summarize(records, expected, 5)
                 self.assertEqual(summary["status"], "complete")
                 self.assertTrue(summary["complete_split"])
-                self.assertEqual(len(ordered), 5)
-                self.assertAlmostEqual(summary["all_6"]["lpips"], (1 + 4 + 9 + 16 + 25) / 500, places=6)
-                self.assertEqual(summary["all_6"]["pcc"], 0.25)
+                self.assertEqual(len(ordered), 15)
+                self.assertAlmostEqual(summary["final/all_18"]["lpips"], (1 + 4 + 9 + 16 + 25) / 500, places=6)
+                self.assertEqual(summary["final/all_18"]["pcc"], 0.25)
                 if baseline is None:
-                    baseline = summary["all_6"]
-                self.assertEqual(summary["all_6"], baseline)
+                    baseline = summary["final/all_18"]
+                self.assertEqual(summary["final/all_18"], baseline)
         with tempfile.TemporaryDirectory() as tmp:
             write_results(tmp, summary, ordered)
-            self.assertEqual(len((Path(tmp) / "per_bin_metrics.csv").read_text().splitlines()), 6)
+            self.assertEqual(len((Path(tmp) / "per_bin_metrics.csv").read_text().splitlines()), 16)
             self.assertEqual(json.loads((Path(tmp) / "evaluation_summary.json").read_text())["evaluated_count"], 5)
 
     def test_coverage_duplicate_invalid_and_limited_status(self):
@@ -72,7 +72,7 @@ class EvaluationTests(CPUOnlyTest):
             with self.assertRaisesRegex(ValueError, message):
                 summarize(bad, expected, 5)
         bad = deepcopy(records)
-        bad[0]["all_6"]["psnr"] = float("nan")
+        bad[0]["psnr"] = float("nan")
         with self.assertRaisesRegex(ValueError, "Non-finite"):
             summarize(bad, expected, 5)
         bad = deepcopy(records)
@@ -84,15 +84,40 @@ class EvaluationTests(CPUOnlyTest):
         self.assertEqual(summary["status"], "limited")
 
     def test_artifact_indexing_and_padding_no_write(self):
-        records = [{"bin_token": "a", "padding": False}, {"bin_token": "b", "padding": False},
-                   {"bin_token": "a", "padding": True}]
+        records = [{"bin_token": "a", "padding": False, "index": 0}, {"bin_token": "b", "padding": False, "index": 1},
+                   {"bin_token": "a", "padding": True, "index": 0}]
         gaussians = torch.stack([torch.full((2, 14), i) for i in (1., 2., 3.)])
         with tempfile.TemporaryDirectory() as tmp, patch("cross_dataset.ply.save_ply") as export:
-            save_artifacts(tmp, {"gaussian": gaussians}, {}, records, save_ply=True)
+            rows = [dict(r, view_group=group) for r in records for group in ("all_18", "novel_12", "input_6")]
+            save_artifacts(tmp, {"gaussian": gaussians}, {}, rows, save_ply=True)
             self.assertEqual(export.call_count, 2)
             self.assertTrue(torch.equal(export.call_args_list[0].args[0], gaussians[0]))
             self.assertTrue(torch.equal(export.call_args_list[1].args[0], gaussians[1]))
             self.assertEqual(sorted(p.name for p in (Path(tmp) / "visualizations").iterdir()), ["a", "b"])
+
+    def test_view_groups_shape_guards_and_visualization(self):
+        import numpy as np
+        batch = next(iter(DataLoader(EvaluationShard(SyntheticDataset(), 1), batch_size=1)))
+        rows = synthetic_records(batch)
+        # Use distinct view values to catch a time/camera layout error in exports.
+        rgb = torch.arange(18).reshape(1,18,1,1,1).expand(1,18,3,12,12).float()/18
+        pred = dict(img=rgb, depth=torch.ones(1,18,12,12), gaussian=torch.ones(1,2,14))
+        gt = dict(img=torch.zeros_like(rgb), depth_m=pred["depth"])
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp, patch("imageio.v2.imwrite") as save:
+            save_artifacts(tmp, pred, gt, rows, save_vis=True)
+            self.assertEqual(save.call_count, 3)
+            for call, order in zip(save.call_args_list, (range(0,12,2),range(1,12,2),range(12,18))):
+                pixels = call.args[1]
+                self.assertEqual(pixels.shape, (36,72,3))
+                self.assertEqual(pixels[12,::12,0].tolist(), (np.asarray(list(order))/18*255).astype('uint8').tolist())
+        funcs = {key: (lambda a,b: (a-b).square().mean((1,2,3))) for key in ("psnr","ssim","lpips")}
+        short_pred = {k: v[:,:6] if k != "gaussian" else v for k,v in pred.items()}
+        short_gt = {k: v[:,:6] for k,v in gt.items()}
+        with self.assertRaisesRegex(ValueError, 'matching'):
+            batch_metrics(short_pred, short_gt, ['bin_0'], [0], [False], metrics=funcs)
+        diagnostics = batch_metrics(short_pred, short_gt, ['bin_0'], [0], [False], metrics=funcs, expected_views=6)
+        summary, _ = summarize(diagnostics, ['bin_0'], 1, expected_views=6)
+        self.assertEqual(summary['metric_groups'], ['final/all_6'])
 
 
 class CheckpointTests(CPUOnlyTest):

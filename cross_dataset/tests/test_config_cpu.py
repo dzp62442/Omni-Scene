@@ -19,15 +19,18 @@ class ConfigTests(CPUOnlyTest):
             for resolution in ("112x200", "224x400"):
                 original = Config.fromfile(str(PROJECT_ROOT / f"configs/OmniScene/omni_gs_nusc_novelview_r50_{resolution}.py")).to_dict()
                 full_path = f"configs/{target}/omni_gs_{target.lower()}_r50_{resolution}.py"
-                full = load_config(full_path, training=True)
+                full = load_config(full_path)
                 zero = load_config(f"configs/ZeroShot/omni_gs_nusc_to_{target.lower()}_r50_{resolution}.py")
                 for cfg in (full, zero):
                     actual = deepcopy(cfg.to_dict())
                     for scope in (actual["dataset_params"], actual["model"]["dataset_params"]):
                         self.assertEqual(scope.pop("processed_root"), f"data/{target}/processed")
-                        self.assertTrue(scope.pop("only_input"))
+                        self.assertFalse(scope.pop("only_input"))
+                        scope.pop("temporal_cfg")
                         scope["dataset_name"] = "nuScenesDataset"
                     self.assertFalse(actual["eval_args"].pop("compute_pcc"))
+                    self.assertFalse(actual["eval_args"].pop("eval_use_ego_mask"))
+                    actual["eval_args"].pop("eval_mask_cfg")
                     actual["exp_name"] = original["exp_name"]
                     actual["output_dir"] = original["output_dir"]
                     # All original keys, including optimizer/loss/model/scheduler,
@@ -67,4 +70,21 @@ class ConfigTests(CPUOnlyTest):
             with self.assertRaisesRegex(ValueError, "lacks a target"):
                 training_directory(cfg, tmp)
             cfg.dump(str(Path(tmp) / "target.py"))
-            self.assertEqual(training_directory(cfg, tmp), Path(tmp))
+            with self.assertRaisesRegex(FileNotFoundError, "train temporal18"):
+                training_directory(cfg, tmp)
+
+    def test_training_assets_and_mask_mode_preflight(self):
+        from cross_dataset.configuration import evaluation_mask_config, evaluation_output_directory
+        for target in ("PandaSet", "DDAD"):
+            path = f"configs/{target}/omni_gs_{target.lower()}_r50_112x200.py"
+            with self.assertRaisesRegex(FileNotFoundError, "train temporal18"):
+                load_config(path, training=True)
+        cfg = load_config("configs/DDAD/omni_gs_ddad_r50_112x200.py")
+        plain = evaluation_output_directory(cfg)
+        evaluation_mask_config(cfg, "val", True)
+        self.assertEqual(evaluation_output_directory(cfg), plain + "_ego_novel12_v1")
+        with self.assertRaisesRegex(ValueError, "independent evaluation"):
+            evaluation_mask_config(cfg, "train", True)
+        cfg = load_config("configs/PandaSet/omni_gs_pandaset_r50_112x200.py")
+        with self.assertRaisesRegex(ValueError, "independent evaluation"):
+            evaluation_mask_config(cfg, "test", True)
