@@ -48,7 +48,9 @@ def load_config(path, training=False):
         raise ValueError("Target datasets require six cameras")
     if cfg.model.loss_args != cfg.loss_args or cfg.model.dataset_params.pc_range != cfg.point_cloud_range:
         raise ValueError("Inconsistent nested loss/spatial configuration")
-    evaluation_mask_config(cfg, "train" if training else cfg.get("split", "test"), training=training)
+    # Shared target configs enable masks only for independent DDAD evaluation.
+    evaluation_mask_config(cfg, "train" if training else cfg.get("split", "test"),
+                           enabled=False if training else None, training=training)
     if training:
         # Fail before constructing Accelerator/model; never substitute test assets.
         from .datasets import build_dataset

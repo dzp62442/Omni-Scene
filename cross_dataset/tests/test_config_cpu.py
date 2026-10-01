@@ -1,6 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 from mmengine.config import Config
 
@@ -29,7 +30,7 @@ class ConfigTests(CPUOnlyTest):
                         scope.pop("temporal_cfg")
                         scope["dataset_name"] = "nuScenesDataset"
                     self.assertFalse(actual["eval_args"].pop("compute_pcc"))
-                    self.assertFalse(actual["eval_args"].pop("eval_use_ego_mask"))
+                    self.assertEqual(actual["eval_args"].pop("eval_use_ego_mask"), target == "DDAD")
                     actual["eval_args"].pop("eval_mask_cfg")
                     actual["exp_name"] = original["exp_name"]
                     actual["output_dir"] = original["output_dir"]
@@ -75,16 +76,32 @@ class ConfigTests(CPUOnlyTest):
 
     def test_training_assets_and_mask_mode_preflight(self):
         from cross_dataset.configuration import evaluation_mask_config, evaluation_output_directory
+        from cross_dataset.evaluate import parser
         for target in ("PandaSet", "DDAD"):
             path = f"configs/{target}/omni_gs_{target.lower()}_r50_112x200.py"
+            with patch("cross_dataset.datasets.build_dataset") as build_dataset:
+                training_cfg = load_config(path, training=True)
+                self.assertFalse(training_cfg.eval_args.eval_use_ego_mask)
+                build_dataset.assert_called_once_with(training_cfg.dataset_params, "train")
             with self.assertRaisesRegex(FileNotFoundError, "train temporal18"):
                 load_config(path, training=True)
-        cfg = load_config("configs/DDAD/omni_gs_ddad_r50_112x200.py")
-        plain = evaluation_output_directory(cfg)
-        evaluation_mask_config(cfg, "val", True)
-        self.assertEqual(evaluation_output_directory(cfg), plain + "_ego_novel12_v1")
+        for resolution in ("112x200", "224x400"):
+            path = f"configs/ZeroShot/omni_gs_nusc_to_ddad_r50_{resolution}.py"
+            for flags, enabled in (([], True), (["--no-eval-use-ego-mask"], False),
+                                   (["--eval-use-ego-mask"], True)):
+                cfg = load_config(path)
+                masked = evaluation_output_directory(cfg)
+                self.assertTrue(masked.endswith("_ego_novel12_v1"))
+                args = parser().parse_args(["--py-config", path, *flags])
+                mask_cfg = evaluation_mask_config(cfg, "val", args.eval_use_ego_mask)
+                self.assertEqual(mask_cfg is not None, enabled)
+                self.assertEqual(cfg.eval_args.eval_use_ego_mask, enabled)
+                self.assertEqual(evaluation_output_directory(cfg),
+                                 masked if enabled else masked.removesuffix("_ego_novel12_v1"))
         with self.assertRaisesRegex(ValueError, "independent evaluation"):
             evaluation_mask_config(cfg, "train", True)
+        with self.assertRaisesRegex(ValueError, "independent evaluation"):
+            evaluation_mask_config(cfg, "val", True, training=True)
         cfg = load_config("configs/PandaSet/omni_gs_pandaset_r50_112x200.py")
         with self.assertRaisesRegex(ValueError, "independent evaluation"):
             evaluation_mask_config(cfg, "test", True)

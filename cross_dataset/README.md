@@ -35,9 +35,9 @@ PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 python -m cross_dataset.evaluate \
   --output-dir outputs/zero_shot/reference_nusc_to_pandaset_r50_112x200/test/checkpoint-100000/novel18_s10_d1p6_min0p1
 ```
 
-## DDAD：完整 test，全图评估
+## DDAD：完整 test，手动关闭自车掩码
 
-评估 SVF-GS 对应划分的全部 **324 个 bin**：
+评估 SVF-GS 对应划分的全部 **324 个 bin**，用 `--no-eval-use-ego-mask` 覆写为全图评估：
 
 ```bash
 PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 python -m cross_dataset.evaluate \
@@ -50,9 +50,9 @@ PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 python -m cross_dataset.evaluate \
   --output-dir outputs/zero_shot/reference_nusc_to_ddad_r50_112x200/test/checkpoint-100000/novel18_s10_d1p6_min0p1
 ```
 
-## DDAD：完整 test，novel_12 使用自车掩码
+## DDAD：完整 test，默认使用自车掩码
 
-仍评估相同 324 个 bin。前 12 路目标按有效像素计算指标，中央输入 6 路保持全图；`all_18` 对 18 个视角等权平均。掩码默认关闭，通过下面的显式开关启用：
+DDAD 独立评估默认启用自车掩码（112×200、224×400 均生效），无需额外开关。仍评估相同 324 个 bin：`novel_12` 按有效像素计算，`input_6` 保持全图，`all_18` 对 18 个视角等权平均。训练与 PandaSet 保持不使用自车掩码。
 
 ```bash
 PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 python -m cross_dataset.evaluate \
@@ -61,7 +61,6 @@ PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 python -m cross_dataset.evaluate \
   --source-dataset nuScenes \
   --source-config 'workdirs/[reference]omni_gs_nusc_novelview_r50_112x200/omni_gs_nusc_novelview_r50_112x200.py' \
   --split test \
-  --eval-use-ego-mask \
   --output-dir outputs/zero_shot/reference_nusc_to_ddad_r50_112x200/test/checkpoint-100000/novel18_s10_d1p6_min0p1_ego_novel12_v1
 ```
 

@@ -46,7 +46,7 @@ dataset_params = dict(
      'output_tag': 'novel18_s10_d1p6_min0p1'},
 )
 model = dict(dataset_params=dataset_params)
-eval_args = dict(compute_pcc=False, eval_use_ego_mask=False,
+eval_args = dict(compute_pcc=False, eval_use_ego_mask=True,
                  eval_mask_cfg={'schema': 'svfgs_ddad_ego_mask_v1',
                   'manifest_path': 'ego_masks/vidar_v1/manifest.json',
                   'source_commit': '0d84851ce4d86a9f132f8027898ff981e751db79',

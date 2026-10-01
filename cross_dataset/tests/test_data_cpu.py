@@ -46,10 +46,29 @@ class RealDataTests(CPUOnlyTest):
                 for section in ("inputs", "inputs_pix", "inputs_vol", "outputs"):
                     for key, tensor in actual[section].items():
                         reference = expected[section][key]
+                        if name == "ddad":
+                            # The fixed SVF-GS oracle stores the raw forward/left/up
+                            # frame. Compare DDAD geometry after a change of basis;
+                            # RGB, intrinsics, depth, masks and PandaSet stay exact.
+                            if key == "c2w":
+                                reference = torch.stack((-reference[..., 1, :], reference[..., 0, :],
+                                                         reference[..., 2, :], reference[..., 3, :]), dim=-2)
+                            elif key in ("rays_o", "rays_d"):
+                                reference = torch.stack((-reference[..., 1], reference[..., 0],
+                                                         reference[..., 2]), dim=-1)
+                            elif key == "w2i":
+                                reference = torch.stack((-reference[..., 1], reference[..., 0],
+                                                         reference[..., 2], reference[..., 3]), dim=-1)
                         error = (tensor.float()-reference.float()).abs().max().item()
                         label = f"{name}/{resolution[0]}/{section}.{key}"
                         max_errors[label] = max(max_errors.get(label, 0), error)
-                        torch.testing.assert_close(tensor, reference, atol=1e-6, rtol=1e-6)
+                        atol = 1e-6
+                        if name == "ddad" and key == "w2i":
+                            # Re-solving inv(A @ T) in float32 can differ from
+                            # permuting the already rounded inv(T). Bound rounding
+                            # by four ulps at the projection matrix's scale.
+                            atol = 4 * torch.finfo(reference.dtype).eps * reference.abs().max().item()
+                        torch.testing.assert_close(tensor, reference, atol=atol, rtol=1e-6)
                 self.assertNotIn("mask", actual["outputs"])
                 torch.testing.assert_close(actual["outputs"]["rgb"][12:], actual["inputs"]["rgb"], atol=0, rtol=0)
                 for field in ("depth_m", "conf_m", "c2w", "rays_o", "rays_d"):

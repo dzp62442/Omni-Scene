@@ -1,6 +1,6 @@
 # PandaSet 与 DDAD 零样本泛化及训练评估接入方案
 
-> 修订日期：2026-09-23。本版将已提交的六视角接入升级为 **6 路中央输入 → 18 路目标渲染**，并适配 DDAD 可选自车遮挡掩码。
+> 修订日期：2026-10-01。在 2026-09-23 完成 **6 路中央输入 → 18 路目标渲染** 与 DDAD 可选自车掩码适配的基础上，补充修正 DDAD 公共坐标系与 nuScenes 训练坐标系的对齐。
 >
 > **最高优先级原则不变：原有 OmniScene 的数据加载、训练、推理代码及配置绝对不可改动。保留当前 `cross_dataset` 独立架构，只适配目标数据加载、评估统计及必要的目标配置与测试。**
 >
@@ -57,7 +57,7 @@
 | 文件寻址 | 从图像路径推断其他文件 | 使用 sensor 中明确保存的五类相对资产路径 |
 | 数据完成性 | 读取 bins 与 PKL | 核对 selection、manifest、bins、PKL 和资产身份 |
 | 正式汇总 | `all_6` | `final/all_18`，同时保存两个诊断分组 |
-| DDAD 自车区域 | 全图评估 | 默认全图；可选 `ddad_ego_novel12_v1` |
+| DDAD 自车区域 | 全图评估 | 默认 `ddad_ego_novel12_v1`；可手动关闭为全图 |
 | train 资产 | 旧产物有训练索引 | 当前新产物没有训练索引，不允许回退到 test |
 
 不能只将评估张量的 `6` 改成 `18`：新资产的索引范围、DDAD 相机映射、图像变换和资产身份均已更新。旧 `all_6` 结果不能改名后当作本版结果；旧 README 命令的 3120/395 样本说明也不能继续用于新数据。
@@ -203,19 +203,32 @@ DDAD 新物理顺序为 **01、06、05、09、07、08**。旧六视角版的 01�
 T_cv = inverse(T_world_from_lidar(center)) @ T_world_from_camera(image)
 ```
 
-每个 bin 的 18 路统一到**同一个中央 LiDAR 坐标系**。本项目直接读取每个 sensor 的 `sensor2lidar_transform`，不以静态标定外参代替前后帧变换，不分别将三个时刻归一化，不基于 DDAD 时间戳自行推断 stem。
+每个 bin 的 18 路预处理位姿统一到**同一个中央 LiDAR 坐标系**。本项目读取每个 sensor 的 `sensor2lidar_transform`，不以静态标定外参代替前后帧变换，不分别将三个时刻归一化，不基于 DDAD 时间戳自行推断 stem。
 
-数据层保留原相机轴约定：
+**DDAD 加载边界必须额外对齐公共坐标轴。** DDAD 预处理参考系为 `+X 前 / +Y 左 / +Z 上`，而 nuScenes 训练权重使用 `+X 右 / +Y 前 / +Z 上`。在 `DDADDataset.read_info()` 中先调用原有清单/位姿校验，再对内存中的中央 6 路及前后 12 路全部执行：
+
+```text
+A_ddad = [[0,-1,0,0], [1,0,0,0], [0,0,1,0], [0,0,0,1]]
+T_model = A_ddad @ T_cv
+R_model = A_ddad[:3,:3] @ R_cv
+t_model = A_ddad[:3,:3] @ t_cv
+```
+
+更新 `sensor2lidar_transform/rotation/translation` 后，复用不变的公共 `camera_tensors()` 重新派生几何量。该变换只在 DDAD 子类执行，所有划分、全图/自车掩码和 `only_input` 模式一致；不写回预处理文件，不旋转模型范围或修改已学习参数。PandaSet 保持 `T_model=T_cv`，原 nuScenes 路径保持原样。
+
+公共参考系变换与相机局部 OpenCV→OpenGL 翻转不同。保留原相机轴约定：
 
 ```text
 F = diag(1,-1,-1,1)
-c2w_gl = T_cv @ F
+c2w_gl = T_model @ F
 ray_cam = [(u+0.5-cx)/fx, -(v+0.5-cy)/fy, -1]
 world_point = ray_o + ray_d * metric_depth
-w2i = K4 @ inverse(T_cv)
+w2i = K4 @ inverse(T_model)
 ```
 
-射线不归一化；Metric3D 米制深度是光轴深度。`w2i` 只按输入 6 路供 Volume encoder 使用，目标 18 路使用自己的 c2w/FOV。DDAD 坐标朝向以新资产为准，不引入额外轴旋转来套用 nuScenes；模型空间范围仍继承原值。
+射线不归一化；Metric3D 米制深度是光轴深度。`w2i` 只按输入 6 路供 Volume encoder 使用，目标 18 路使用自己的 c2w/FOV；原模型的 Plücker 特征与反投影位置由新射线自然更新。统一左乘保留相对位姿、投影和米制尺度，但模型对公共坐标方向的响应不应假定不变。
+
+**本段修正 2026-09-23 方案中“DDAD 不引入额外轴旋转”的遗漏。** 之前与原始 SVF-GS 加载张量完全一致，只能证明复现了其数据坐标，不能证明与本项目 nuScenes 训练坐标一致。修复不涉及开源模型、渲染器或原模型 bug；启动指令、实验名称、输出目录和评估协议不变。DDAD 的 manifest 来源信息另记 `camera_frame`、`reference_to_model`，不改选帧或掩码协议。
 
 ### 5.2 原图变换已完成，运行时只缩放
 
@@ -248,14 +261,15 @@ w2i = K4 @ inverse(T_cv)
 
 ### 6.3 开关与作用边界
 
-在目标 `eval_args` 中增加 `eval_use_ego_mask=False` 与独立 `eval_mask_cfg`，CLI 已增加 `--eval-use-ego-mask` / `--no-eval-use-ego-mask` 覆盖。具体规则：
+目标 `eval_args.eval_use_ego_mask` 在 DDAD 两种分辨率中默认 `True`，PandaSet 保持 `False`；ZeroShot 配置继承对应设置。独立评估可用 `--no-eval-use-ego-mask` 手动关闭，也保留 `--eval-use-ego-mask` 显式开启。具体规则：
 
 | 场景 | 掩码行为 |
 | --- | --- |
-| DDAD 独立评估，`split=test/val` | 可开启；`val` 仍是独立评估的十样本诊断 |
-| DDAD `only_input=True` 的独立评估 | 可开启，但六路 mask 全 1，分数应与同清单的关闭模式一致 |
+| DDAD 独立评估，`split=test/val` | 默认开启；`val` 仍是独立评估的十样本诊断 |
+| DDAD `only_input=True` 的独立评估 | 默认开启，但六路 mask 全 1，分数应与同清单的关闭模式一致 |
 | PandaSet 或 nuScenes | 拒绝开启；原 nuScenes 入口本身不接入此开关 |
-| 训练入口、训练中验证 loss、或 `split=train` | 拒绝开启，不将测试掩码带入训练 |
+| 训练入口、训练中验证 loss | 加载配置时固定关闭，不将独立评估默认值带入训练 |
+| 独立评估使用 `split=train` | 必须显式关闭掩码，否则拒绝 |
 
 SVF-GS 的 `mode=test` 是**运行模式**，不是仅指数据 `split=test`；本项目对应 `cross_dataset.evaluate`。保留既有 `train/val/test` API，同时将此新掩码功能限定在目标域独立评估。
 
@@ -283,13 +297,13 @@ score(all_18) = (12 * score(novel_12) + 6 * score(input_6)) / 18
 
 这在掩码开启时也成立：12 个新视角各自在自己的有效像素上计算，6 个输入视角保持全图，然后仍按视角等权平均。不能改成只报 novel 12，也不能按视角有效像素数重新加权。PCC 是相关系数，不适用该加权公式。
 
-### 7.2 默认全图
+### 7.2 全图指标
 
 `pixel_protocol=full_image`。继续只读调用本项目 `tools.metrics` 的原 PSNR、SSIM、LPIPS/PCC 函数，不改公共工具；开关关闭或单个视角 mask 全 1 时，走原全图路径。
 
 数据升级包含索引、相机和 RGB 插值变化，因此“掩码关闭回归”指同一套新 18 视角数据上的全图基准，不要求复现旧六视角产物的数值。
 
-### 7.3 可选 masked 指标
+### 7.3 DDAD 默认 masked 指标
 
 **强制一致性要求：启用 DDAD 自车掩码时，指标计算与汇总必须与 SVF-GS 一致，尤其是 `final/novel_12`；不能仅复用同一份掩码而采用另一套 masked 指标定义。** 以第 1.1 节固定的 SVF-GS 版本中 `configs/build_config.py:build_eval_mask_config`、`tools/metrics.py:compute_image_metrics/compute_eval_pcc`、`tools/ablation_metrics.py:render_records` 和 `tools/ablation_results.py:summarize_records` 为数值对照依据，覆盖视角选择、有效像素、指标参数、全有效视角分支和汇总顺序。后续参考实现变更须重新核对并记录版本，不静默跟随。
 
@@ -328,7 +342,7 @@ score(all_18) = (12 * score(novel_12) + 6 * score(input_6)) / 18
 
 - 目标数据协议改为 `svfgs_temporal18_v1`，默认 `only_input=False`；processed_root 仍指向现有新产物目录。
 - 必要的 `temporal_cfg` 读取协议；顶层 `dataset_params` 与 `model.dataset_params` 同步，后者仅保持现有配置一致性，不由模型消费额外测试开关。
-- `eval_args.eval_use_ego_mask=False`、独立 mask 配置和三视角组统计；`compute_pcc=False` 保持不变。
+- `eval_args.eval_use_ego_mask` 在 DDAD 独立评估中默认 `True`，PandaSet 和训练保持 `False`；使用独立 mask 配置和三视角组统计，`compute_pcc=False` 保持不变。
 - 结果目录追加 `novel18_s10_d1p6_min0p1`；掩码开启追加 `_ego_novel12_v1`，显式六视角诊断再区分 `_input6`。保持源权重目录独立。
 - 新入口的配置检查允许合法的 18 输出；`num_cams=6`、Pixel 的相机数及编码器输入视角数始终不变。
 
@@ -575,6 +589,16 @@ GPU 严格模型加载、真实模型前向、完整 test 指标仍未执行；C
 `1f2c6f5` 保存 2026-09-18 的六视角实现与原文档。当时 17 项 CPU 检查及 CPU/Gloo 双进程夹具通过，数据为 PandaSet 3120/10/3120、DDAD 1265/10/395（train/val/test）；原文件冻结核对包含 52 个 Git blob。
 
 这些都是旧资产与旧代码契约的历史事实。当前共享 `processed` 已发布新 18 视角产物，旧测试中的数量、train 文件和相机假设已在本轮开发中更新；不能原样重跑后将失败解释为新产物错误，也不能将旧通过记录写为本版通过。旧详细记录可查该提交中的本文件，不在当前规范中继续保留过时命令。
+
+### 13.4 DDAD 公共坐标系修复复查（CPU，2026-10-01）
+
+- 根因已从实际资产确认：nuScenes 前相机光轴约为 `(-0.0034,0.9998,0.0188)`，DDAD 原始前相机光轴约为 `(0.9977,0.0674,-0.0094)`。仅有相对位姿和投影自洽的检查未覆盖两者公共坐标朝向的差异。
+- 生产代码只修改 `cross_dataset/datasets/ddad.py`。校验原始位姿后，在内存中统一左乘第 5.1 节矩阵，并同步 rotation/translation；共享加载器从新位姿重算 c2w、rays、w2i。增加 DDAD 来源元数据说明，不改变协议标识或目录名称。
+- 17 项相关 CPU 测试通过，覆盖真实 DDAD 首/中/末 bin、两分辨率、6×18 相对位姿、米制距离、投影、反投影、Plücker 几何、掩码开关、六视角诊断、PandaSet 原参考对照、原配置和训练调用冻结。新增检查将真实 nuScenes 相机朝向作为锚点，避免仅因投影正确就误判公共坐标正确。
+- DDAD 位姿、射线、反投影点与按轴变换的参考值逐元素一致；w2i 在 float32 中重新求逆，与先求逆再变基的旧夹具存在舍入差异，最大系数差分别为 `7.6294e-5`（112×200）和 `1.5259e-4`（224×400）。测试以矩阵尺度的四个 float32 ulp 约束该差异，并独立保留 `2e-3` 像素投影检查；不修改生产计算精度或指标容差。RGB、深度、内参、掩码及 PandaSet 数据对照保持不变。
+- 验证日志及修复前朝向快照在 `/tmp/omniscene-ddad-axes-20261001/`；参考夹具仍只读复用 `/tmp/omniscene-temporal18/reference/`。未运行 GPU、未修改共享数据或删除旧实验结果，未处理原模型 bug；未对修复后的模型指标提升作结论。
+
+原启动指令和实验名称可继续使用，由用户清理旧零样本结果后重评；原开源模型、渲染器、nuScenes/PandaSet 运行路径、训练设置与三组评估协议全部保持不变。
 
 ## 14. 只读依据
 
