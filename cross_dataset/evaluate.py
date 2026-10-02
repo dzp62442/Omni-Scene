@@ -18,6 +18,8 @@ def parser():
     result.add_argument("--source-dataset")
     result.add_argument("--source-config")
     result.add_argument("--source-metadata", help="Optional hash-bound source_metadata.json")
+    result.add_argument("--save-vis", action=argparse.BooleanOptionalAction, default=None,
+                        help="Save GT/rendered RGB and predicted depth panels; overrides eval_args.save_vis")
     result.add_argument("--eval-use-ego-mask", action=argparse.BooleanOptionalAction, default=None,
                         help="DDAD only: exclude ego pixels on novel_12; input_6 stays full-image")
     return result
@@ -45,6 +47,8 @@ def main(args):
     from .evaluation import EvaluationShard, batch_metrics, summarize, write_json, write_results, save_artifacts
 
     cfg = load_config(args.py_config)
+    if args.save_vis is not None:
+        cfg.eval_args.save_vis = args.save_vis
     declaration = source_declaration(cfg, args.source_dataset, args.source_config)
     requested_weights = args.load_from or cfg.get("load_from")
     weights = resolve_checkpoint(requested_weights)

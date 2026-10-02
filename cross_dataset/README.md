@@ -99,6 +99,8 @@ PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=0 python -m cross_dataset.evaluate \
 
 完整评估应同时满足 `status="complete"`、`complete_split=true`，且 `evaluated_count` 为 PandaSet 的 264 或 DDAD 的 324。默认不保存可视化和 PLY。开启保存时，每个 bin 只导出一次 PLY，RGB/深度按 before、after、input 三组六相机布局保存，保留实际渲染结果。
 
+在上述任一评估命令中加 `--save-vis` 即可保存可视化到输出目录的 `visualizations/<bin_token>/`，无需修改配置文件；`--no-save-vis` 可显式关闭。此开关仅控制 RGB/深度拼图，不开启 PLY 导出。
+
 manifest 与各组结果记录 selection/manifest 摘要、`pixel_protocol`、`mask_manifest_sha256`。全图和掩码实验使用不同空目录；掩码版本、选帧或像素协议不同的记录不能混合汇总。省略 `--output-dir` 时，入口按最终 only_input/掩码开关追加协议目录；显式路径优先。
 
 当前 reference 检查点未提供 `source_metadata.json`，因此 manifest 中会记录 `unverified_legacy_checkpoint`。保存的源配置已通过静态模型设置一致性核对；完整原样模型的严格加载与真实前向仍待 GPU 验证。
